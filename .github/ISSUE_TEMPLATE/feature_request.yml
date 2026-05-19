@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose an improvement for Vault Vision.
+title: "feature: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should the user be able to do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - analysis
+        - stick-figure overlay
+        - coach dashboard
+        - Supabase/cloud
+        - deployment
+        - documentation
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will an agent know the feature is done?
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Add examples, references, or constraints.
