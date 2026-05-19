@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a problem in Vault Vision.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include video type, browser, camera angle, and whether Supabase was connected.
+      placeholder: |
+        1. Open ...
+        2. Load ...
+        3. Click ...
+    validations:
+      required: true
+  - type: textarea
+    id: testing
+    attributes:
+      label: Checks already run
+      description: Include test commands, browser console errors, or screenshots.
