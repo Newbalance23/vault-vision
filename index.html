@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vault Vision</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Vault Vision</p>
+          <h1>Pole vault form analysis</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="cloudStatus" class="status-pill status-muted">Cloud not configured</span>
+          <button id="refreshLibraryButton" class="icon-button" type="button" title="Refresh library" aria-label="Refresh library">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel setup-panel" aria-labelledby="cloudSetupTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Cloud</p>
+              <h2 id="cloudSetupTitle">Supabase account</h2>
+            </div>
+            <button id="signOutButton" class="ghost-button hidden" type="button">
+              <i data-lucide="log-out"></i>
+              <span>Sign out</span>
+            </button>
+          </div>
+
+          <div class="config-grid">
+            <label>
+              <span>Project URL</span>
+              <input id="supabaseUrlInput" type="url" autocomplete="off" placeholder="https://..." />
+            </label>
+            <label>
+              <span>Anon key</span>
+              <input id="supabaseAnonInput" type="password" autocomplete="off" placeholder="ey..." />
+            </label>
+            <button id="saveConfigButton" class="primary-button" type="button">
+              <i data-lucide="cloud"></i>
+              <span>Use project</span>
+            </button>
+          </div>
+
+          <div id="authControls" class="auth-grid">
+            <label>
+              <span>Email</span>
+              <input id="emailInput" type="email" autocomplete="email" placeholder="coach@example.com" />
+            </label>
+            <label>
+              <span>Password</span>
+              <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Password" />
+            </label>
+            <div class="button-row">
+              <button id="signInButton" class="primary-button" type="button">
+                <i data-lucide="log-in"></i>
+                <span>Sign in</span>
+              </button>
+              <button id="signUpButton" class="secondary-button" type="button">
+                <i data-lucide="user-plus"></i>
+                <span>Create account</span>
+              </button>
+            </div>
+          </div>
+
+          <p id="setupMessage" class="message-line"></p>
+        </section>
+
+        <section class="panel review-panel" aria-labelledby="reviewTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Review</p>
+              <h2 id="reviewTitle">Video workspace</h2>
+            </div>
+            <div class="button-row">
+              <label class="file-button">
+                <i data-lucide="upload"></i>
+                <span>Load video</span>
+                <input id="videoInput" type="file" accept="video/*" />
+              </label>
+              <button id="runAnalysisButton" class="primary-button" type="button" disabled>
+                <i data-lucide="activity"></i>
+                <span>Analyze</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="video-stage" id="videoStage">
+            <video id="vaultVideo" playsinline controls preload="metadata"></video>
+            <canvas id="overlayCanvas"></canvas>
+            <div id="emptyVideoState" class="empty-video-state">
+              <canvas id="runwaySketch" width="900" height="420" aria-hidden="true"></canvas>
+              <p>Load a pole vault clip to begin review.</p>
+            </div>
+          </div>
+
+          <div id="liveFormStrip" class="live-form-strip hidden">
+            <span id="liveStatusDot" class="live-dot status-unknown"></span>
+            <strong id="liveStatusLabel">Live form</strong>
+            <span id="livePhaseLabel">No frame selected</span>
+            <span id="liveScoreLabel">0%</span>
+          </div>
+
+          <div class="timeline-wrap">
+            <div id="phaseTimeline" class="phase-timeline"></div>
+            <div class="scrub-row">
+              <input id="timeSlider" type="range" min="0" max="0" value="0" step="0.01" disabled />
+              <output id="timeReadout">0.00s</output>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel controls-panel" aria-labelledby="controlsTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Settings</p>
+              <h2 id="controlsTitle">Analysis inputs</h2>
+            </div>
+          </div>
+
+          <div class="field-stack">
+            <label>
+              <span>Athlete</span>
+              <input id="athleteNameInput" type="text" autocomplete="off" placeholder="Athlete name" />
+            </label>
+            <label>
+              <span>Session title</span>
+              <input id="sessionTitleInput" type="text" autocomplete="off" placeholder="Practice jump" />
+            </label>
+            <label>
+              <span>Camera angle</span>
+              <select id="cameraAngleSelect">
+                <option value="auto">Auto / unknown</option>
+                <option value="side">Side view</option>
+                <option value="front">Front view</option>
+                <option value="rear">Rear view</option>
+                <option value="oblique">Oblique view</option>
+              </select>
+            </label>
+            <label>
+              <span>Model</span>
+              <select id="modelVariantSelect">
+                <option value="full" selected>Full</option>
+                <option value="lite">Lite</option>
+                <option value="heavy">Heavy</option>
+              </select>
+            </label>
+            <label>
+              <span>Sample rate</span>
+              <select id="sampleRateSelect">
+                <option value="8">8 fps</option>
+                <option value="12" selected>12 fps</option>
+                <option value="16">16 fps</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="tool-strip" role="toolbar" aria-label="Calibration tools">
+            <button class="tool-button" type="button" data-tool="box" title="Mark plant box">
+              <i data-lucide="box"></i>
+              <span>Box</span>
+            </button>
+            <button class="tool-button" type="button" data-tool="runway" title="Mark runway line">
+              <i data-lucide="route"></i>
+              <span>Runway</span>
+            </button>
+            <button class="tool-button" type="button" data-tool="bar" title="Mark crossbar">
+              <i data-lucide="minus"></i>
+              <span>Bar</span>
+            </button>
+            <button class="tool-button" type="button" data-tool="pole" title="Mark pole line">
+              <i data-lucide="slash"></i>
+              <span>Pole</span>
+            </button>
+            <button id="clearCalibrationButton" class="tool-button" type="button" title="Clear calibration">
+              <i data-lucide="eraser"></i>
+              <span>Clear</span>
+            </button>
+          </div>
+          <p id="calibrationMessage" class="message-line">Select a marker, then click the video.</p>
+
+          <div class="button-row">
+            <button id="saveAnalysisButton" class="secondary-button" type="button" disabled>
+              <i data-lucide="save"></i>
+              <span>Save analysis</span>
+            </button>
+            <button id="exportJsonButton" class="ghost-button" type="button" disabled>
+              <i data-lucide="file-json"></i>
+              <span>Export JSON</span>
+            </button>
+          </div>
+
+          <div id="progressBlock" class="progress-block hidden">
+            <div class="progress-track"><span id="progressBar"></span></div>
+            <p id="progressText">Preparing analysis...</p>
+          </div>
+        </section>
+
+        <section class="panel results-panel" aria-labelledby="resultsTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Feedback</p>
+              <h2 id="resultsTitle">Priority cues</h2>
+            </div>
+            <span id="confidenceBadge" class="status-pill status-muted">No analysis</span>
+          </div>
+
+          <div id="scoreSummary" class="score-summary hidden"></div>
+          <div id="issuesList" class="issues-list">
+            <p class="empty-copy">Analysis feedback will appear here.</p>
+          </div>
+        </section>
+
+        <section class="panel metrics-panel" aria-labelledby="metricsTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Metrics</p>
+              <h2 id="metricsTitle">Vault markers</h2>
+            </div>
+          </div>
+          <div id="metricsGrid" class="metrics-grid">
+            <p class="empty-copy">Run analysis to calculate phase and body-line metrics.</p>
+          </div>
+        </section>
+
+        <section class="panel library-panel" aria-labelledby="libraryTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Library</p>
+              <h2 id="libraryTitle">Saved sessions</h2>
+            </div>
+          </div>
+          <div id="libraryList" class="library-list">
+            <p class="empty-copy">Sign in to load saved vault sessions.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
