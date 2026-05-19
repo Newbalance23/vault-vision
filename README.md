@@ -1,5 +1,7 @@
 # Vault Vision
 
+[![CI](https://github.com/Newbalance23/vault-vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Newbalance23/vault-vision/actions/workflows/ci.yml)
+
 Vault Vision is a static browser app for pole vault video review. It uploads and analyzes video locally in the browser, draws MediaPipe stick-figure tracking over the athlete, produces rule-based coaching cues, and can save private sessions to Supabase.
 
 ## Run Locally
