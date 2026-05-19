@@ -1,2 +1,41 @@
-# vault-vision
-Pole vault video analysis web app with MediaPipe tracking, form scoring, and Supabase cloud storage.
+# Vault Vision
+
+Vault Vision is a static browser app for pole vault video review. It uploads and analyzes video locally in the browser, draws MediaPipe stick-figure tracking over the athlete, produces rule-based coaching cues, and can save private sessions to Supabase.
+
+## Run Locally
+
+This project intentionally has no npm build step. Serve the folder over HTTP so browser modules and video APIs work correctly:
+
+```powershell
+& "C:\Users\heroc\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m http.server 4173
+```
+
+Then open `http://localhost:4173`.
+
+## Supabase Setup
+
+1. Create a Supabase project.
+2. Run `docs/supabase-schema.sql` in the SQL editor.
+3. Copy the project URL and anon key into the app, or add them to `src/config.js` for a public deployment.
+4. Create or sign into an account.
+5. Upload a pole vault video, run analysis, and save the session.
+
+The app expects a private `vault-videos` bucket and row-level security policies from the SQL file.
+
+## GoDaddy Deployment
+
+See `docs/godaddy-deploy.md`. V1 is designed to work well as static files on GoDaddy while Supabase handles auth, storage, and saved analyses.
+
+## Analysis Scope
+
+V1 uses MediaPipe Pose Landmarker and transparent rules. It does not train a custom AI model. Camera angle, occlusion, video quality, and whether the pole or box are marked all affect confidence. The live stick figure uses green, yellow, and red to show good, okay, and needs-work form. Treat feedback as a coaching aid, not a safety guarantee.
+
+## Tests
+
+```powershell
+& "C:\Users\heroc\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" tests/analysis.test.mjs
+```
+
+## Local Video QA
+
+For repeatable testing with a local clip, serve the clip folder with `tools/cors_static_server.py` and open the app with `?video=<encoded video url>&name=<file name>`. This is only for local QA; normal users should use the Load video button.
