@@ -50,6 +50,7 @@ export function analyzeVault({ frames = [], videoMeta = {}, calibration = {}, ca
   const issues = prioritizeIssues(scoreIssues(metrics, phaseRanges, confidence, cameraAngle));
   const frameScores = annotateFrameScores(poseFrames, phaseRanges, cameraAngle);
   const bodyScores = calculateBodyScores(frameScores, metrics);
+  const coachingBreakdown = buildCoachingBreakdown(metrics, bodyScores, phaseRanges, confidence, cameraAngle, calibration);
 
   return {
     schemaVersion: "vault-vision.analysis.v1",
@@ -69,6 +70,24 @@ export function analyzeVault({ frames = [], videoMeta = {}, calibration = {}, ca
     bodyScores,
     overallScore: calculateOverallScore(bodyScores, confidence),
     issues,
+    coachingBreakdown,
+    researchBasis: [
+      {
+        title: "World Athletics pole vault technique guide",
+        url: "https://worldathletics.org/disciplines/throws/pole-vault",
+        appliedTo: ["approach rhythm", "plant arm extension", "drive knee", "swing", "extension", "turn", "clearance"],
+      },
+      {
+        title: "Kinematics of the final approach and take-off in world-class pole vaulters",
+        url: "https://eprints.glos.ac.uk/10962/",
+        appliedTo: ["run-up velocity", "final step timing", "plant box distance", "takeoff angle", "hand-foot relationship"],
+      },
+      {
+        title: "Athletics South Africa coaching pole vault notes",
+        url: "https://athleticssa.org.za/SportsInfo/Coaching-Pole-Vault.pdf",
+        appliedTo: ["tall approach", "early high plant", "takeoff foot under top hand", "free knee drive", "delayed turn"],
+      },
+    ],
     poseFrames: poseFrames.map((frame, index) => ({
       ...frame,
       form: frameScores[index] ?? emptyFrameScore(frame.time),
@@ -233,6 +252,7 @@ export function calculateMetrics(activeSeries = [], phaseRanges = [], cameraAngl
   const extensionFrame = bestFrameInRange(activeSeries, extensionRange, hipAboveShoulderRatio);
   const approachFrames = framesInRange(activeSeries, approachRange);
   const clearanceFrame = bestFrameInRange(activeSeries, clearanceRange, bodyLineScore);
+  const plantIndex = nearestFrameIndex(activeSeries, plantRange?.startTime ?? 0);
 
   const approachSpeedValues = approachFrames.map((frame, index) => {
     if (!index) return null;
@@ -243,29 +263,44 @@ export function calculateMetrics(activeSeries = [], phaseRanges = [], cameraAngl
     return Math.abs(current.x - previous.x) / dt;
   });
 
+  const cameraReliability = CAMERA_RELIABILITY[cameraAngle] ?? CAMERA_RELIABILITY.auto;
   const approachRhythmScore = consistencyScore(approachSpeedValues);
+  const approachAcceleration = lateApproachSpeedScore(approachSpeedValues);
+  const poleCarryControl = poleCarryControlScore(approachFrames);
   const plantArmExtension = armExtensionScore(plantFrame?.pose.landmarks);
+  const plantHandPosition = plantHandPositionScore(plantFrame?.pose.landmarks);
+  const plantPosition = plantPositionScore(plantFrame?.pose.landmarks, calibration);
   const takeoffKneeDrive = kneeDriveScore(plantFrame?.pose.landmarks);
+  const takeoffAngle = takeoffAngleDegrees(activeSeries, plantIndex);
+  const takeoffAngleQuality = takeoffAngleScore(takeoffAngle, cameraReliability);
   const trunkLean = trunkLeanDegrees(plantFrame?.pose.landmarks);
   const trailLeg = trailLegStraightness(swingFrame?.pose.landmarks);
   const inversion = inversionRatio(swingFrame);
   const hipRise = hipAboveShoulderRatio(extensionFrame);
   const shoulderHip = shoulderHipAlignment(extensionFrame?.pose.landmarks);
   const clearance = bodyLineScore(clearanceFrame);
-  const cameraReliability = CAMERA_RELIABILITY[cameraAngle] ?? CAMERA_RELIABILITY.auto;
+  const turnTiming = delayedTurnScore(extensionFrame?.pose.landmarks, clearanceFrame?.pose.landmarks);
 
   return {
     frameCount: activeSeries.length,
     cameraReliability: round(cameraReliability, 2),
     calibrationCompleteness: round(calibrationScore(calibration), 2),
+    calibrationNeeds: calibrationNeeds(calibration),
     approachRhythm: round(approachRhythmScore * cameraReliability, 2),
+    approachAcceleration: round(approachAcceleration * cameraReliability, 2),
+    poleCarryControl: round(poleCarryControl * cameraReliability, 2),
     plantArmExtension: round(plantArmExtension, 2),
+    plantHandPosition: round(plantHandPosition, 2),
+    plantPosition: round(plantPosition, 2),
     takeoffKneeDrive: round(takeoffKneeDrive, 2),
+    takeoffAngleDegrees: round(takeoffAngle, 1),
+    takeoffAngleQuality: round(takeoffAngleQuality, 2),
     trunkLeanDegrees: round(trunkLean, 1),
     trailLegStraightness: round(trailLeg, 2),
     inversionQuality: round(inversion, 2),
     hipRise: round(hipRise, 2),
     shoulderHipAlignment: round(shoulderHip, 2),
+    turnTiming: round(turnTiming, 2),
     clearanceLine: round(clearance, 2),
   };
 }
@@ -326,9 +361,15 @@ export function calculateBodyScores(frameScores = [], metrics = {}) {
     swingRockback: phaseAverage(reliableScores, "swing-rockback"),
     extensionTurn: phaseAverage(reliableScores, "extension-turn"),
     clearanceLanding: phaseAverage(reliableScores, "clearance-landing"),
+    approachAcceleration: metrics.approachAcceleration ?? null,
+    poleCarryControl: metrics.poleCarryControl ?? null,
     plantArmExtension: metrics.plantArmExtension ?? null,
+    plantHandPosition: metrics.plantHandPosition ?? null,
+    plantPosition: metrics.plantPosition ?? null,
     takeoffKneeDrive: metrics.takeoffKneeDrive ?? null,
+    takeoffAngleQuality: metrics.takeoffAngleQuality ?? null,
     inversionQuality: metrics.inversionQuality ?? null,
+    turnTiming: metrics.turnTiming ?? null,
   };
 }
 
@@ -362,6 +403,36 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
     priority: "medium",
     cue: "Keep the last strides tall and rhythmic so the plant arrives on time.",
     drill: "Runway pole-carry buildups with a check mark at the final three steps.",
+    evidence: `Approach rhythm score ${percentText(metrics.approachRhythm)} from hip-center speed consistency.`,
+    measureNext: "Add step check marks so the app can compare takeoff distance and final-stride rhythm across jumps.",
+    confidence: confidence.pose * metrics.cameraReliability,
+  });
+
+  addIssue(issues, {
+    id: "approach-speed-build",
+    title: "Approach speed is not building into takeoff",
+    phase: phaseAt("approach"),
+    value: metrics.approachAcceleration,
+    threshold: 0.55,
+    priority: "medium",
+    cue: "Build speed smoothly into the box without reaching or chopping in the last strides.",
+    drill: "Six-step pole runs with a relaxed pole drop and a fast last three steps.",
+    evidence: `Late approach build score ${percentText(metrics.approachAcceleration)} from the active vaulter's hip path.`,
+    measureNext: "Mark step positions or add a side-view calibration line to separate true speed changes from camera perspective.",
+    confidence: confidence.pose * metrics.cameraReliability,
+  });
+
+  addIssue(issues, {
+    id: "pole-carry-control",
+    title: "Pole carry or hand path is noisy",
+    phase: phaseAt("approach"),
+    value: metrics.poleCarryControl,
+    threshold: 0.5,
+    priority: "low",
+    cue: "Carry the pole quietly and let the hands rise into the plant instead of bouncing through the run.",
+    drill: "Pole runs with the bottom hand steady and the pole tip lowering on the same count each rep.",
+    evidence: `Hand-path control score ${percentText(metrics.poleCarryControl)}; the pole itself is only estimated unless marked.`,
+    measureNext: "Use the Pole marker on a still frame so future reports can estimate pole angle directly.",
     confidence: confidence.pose * metrics.cameraReliability,
   });
 
@@ -374,7 +445,23 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
     priority: "high",
     cue: "Reach the top hand high through takeoff and avoid collapsing the lower arm early.",
     drill: "Walking plants into the box with a tall takeoff posture.",
+    evidence: `Arm extension score ${percentText(metrics.plantArmExtension)} with hand-position score ${percentText(metrics.plantHandPosition)}.`,
+    measureNext: "Check whether the top hand is high before the takeoff foot leaves the runway.",
     confidence: confidence.pose,
+  });
+
+  addIssue(issues, {
+    id: "plant-position",
+    title: "Takeoff foot is not matched to the box mark",
+    phase: phaseAt("plant-takeoff"),
+    value: metrics.plantPosition,
+    threshold: 0.58,
+    priority: "high",
+    cue: "Take off under the top hand with the foot placed consistently relative to the box.",
+    drill: "Short-run takeoffs using a takeoff check mark and a plant-box target.",
+    evidence: `Plant-position score ${percentText(metrics.plantPosition)} from the foot nearest the runway and the marked box.`,
+    measureNext: "Mark the plant box before analysis; without that mark this score is intentionally conservative.",
+    confidence: confidence.pose * Math.max(0.35, metrics.calibrationCompleteness),
   });
 
   addIssue(issues, {
@@ -386,7 +473,23 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
     priority: "medium",
     cue: "Drive the free knee up as the takeoff foot leaves the runway.",
     drill: "Three-step pop-ups with a held knee-drive finish.",
+    evidence: `Knee-drive score ${percentText(metrics.takeoffKneeDrive)} at the detected takeoff frame.`,
+    measureNext: "Use a side view so the free-knee lift is visible and less affected by camera angle.",
     confidence: confidence.pose,
+  });
+
+  addIssue(issues, {
+    id: "takeoff-angle",
+    title: "Takeoff angle is not clear enough",
+    phase: phaseAt("plant-takeoff"),
+    value: metrics.takeoffAngleQuality,
+    threshold: 0.5,
+    priority: "medium",
+    cue: "Leave the ground tall and moving upward into the pole instead of running flat through the takeoff.",
+    drill: "Pop-up takeoffs with a tall chest and visible upward hip movement after takeoff.",
+    evidence: `Estimated takeoff angle ${Number.isFinite(metrics.takeoffAngleDegrees) ? `${metrics.takeoffAngleDegrees} degrees` : "unavailable"}.`,
+    measureNext: "Capture a side view and mark runway/box so the app can separate true takeoff angle from perspective.",
+    confidence: confidence.pose * metrics.cameraReliability,
   });
 
   addIssue(issues, {
@@ -398,6 +501,8 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
     priority: "medium",
     cue: "Keep the trail leg long through the downswing before the rockback.",
     drill: "High-bar long-swing drills and low-grip swing-ups.",
+    evidence: `Trail-leg straightness ${percentText(metrics.trailLegStraightness)} in the swing phase.`,
+    measureNext: "Keep the full lower body visible through swing/rockback so the knee and ankle are not lost.",
     confidence: confidence.pose,
   });
 
@@ -410,6 +515,22 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
     priority: "high",
     cue: "Finish the swing before pulling so the hips can rise with the pole.",
     drill: "Bubka progressions and short-run vaults focused on swing timing.",
+    evidence: `Inversion ${percentText(metrics.inversionQuality)} and hip-rise ${percentText(metrics.hipRise)}.`,
+    measureNext: "Measure hip height relative to shoulders at the top of the swing and compare the timing across jumps.",
+    confidence: confidence.pose * metrics.cameraReliability,
+  });
+
+  addIssue(issues, {
+    id: "turn-timing",
+    title: "Turn timing or shoulder-hip alignment needs review",
+    phase: phaseAt("extension-turn"),
+    value: metrics.turnTiming,
+    threshold: 0.56,
+    priority: "medium",
+    cue: "Stay long through extension, then turn after the hips rise instead of twisting early.",
+    drill: "High-bar extension-to-turn drills with a controlled delayed turn.",
+    evidence: `Turn timing score ${percentText(metrics.turnTiming)} from extension and clearance alignment.`,
+    measureNext: "Use a side or slight-oblique angle so shoulder and hip rotation are both visible.",
     confidence: confidence.pose * metrics.cameraReliability,
   });
 
@@ -422,6 +543,8 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
     priority: "low",
     cue: "Stay connected through shoulders, hips, and feet over the bar.",
     drill: "Back-over bar drills and controlled turn-finish work.",
+    evidence: `Clearance body-line score ${percentText(metrics.clearanceLine)}.`,
+    measureNext: "Mark the crossbar so clearance feedback can reference the actual bar line.",
     confidence: confidence.pose * metrics.cameraReliability,
   });
 
@@ -434,6 +557,8 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
       score: round(confidence.overall, 2),
       cue: "Review the overlay and calibration marks before acting on any single score.",
       drill: "For the next clip, use a steady camera with the full body visible from approach through landing.",
+      evidence: `Overall confidence ${percentText(confidence.overall)}; camera reliability ${percentText(metrics.cameraReliability)}.`,
+      measureNext: "Prefer a full-body side view, then mark box, runway, bar, and pole for the most useful report.",
       confidence: round(confidence.overall, 2),
       status: "warning",
     });
@@ -448,6 +573,8 @@ export function scoreIssues(metrics, phaseRanges, confidence, cameraAngle) {
       score: round(confidence.overall, 2),
       cue: "Use frame-by-frame review to confirm the plant, swing, and clearance details.",
       drill: "Compare this jump against a future clip using the same camera setup.",
+      evidence: "The available landmarks did not cross any high-priority warning thresholds.",
+      measureNext: "Add calibration markers and compare multiple attempts to catch smaller timing changes.",
       confidence: round(confidence.overall, 2),
       status: "positive",
     });
@@ -617,6 +744,20 @@ function bestFrameInRange(series, range, scoreFn) {
   return candidates.reduce((best, frame) => (scoreFn(frame) > scoreFn(best) ? frame : best), candidates[0]);
 }
 
+function nearestFrameIndex(series, time) {
+  if (!series.length) return -1;
+  let bestIndex = 0;
+  let bestDistance = Infinity;
+  series.forEach((frame, index) => {
+    const distanceFromTime = Math.abs(frame.time - time);
+    if (distanceFromTime < bestDistance) {
+      bestDistance = distanceFromTime;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
+}
+
 function consistencyScore(values) {
   const clean = values.filter(Number.isFinite);
   if (clean.length < 3) return 0.45;
@@ -626,11 +767,58 @@ function consistencyScore(values) {
   return clamp(1 - Math.sqrt(variance) / mean);
 }
 
+function lateApproachSpeedScore(values) {
+  const clean = values.filter(Number.isFinite);
+  if (clean.length < 4) return 0.45;
+  const split = Math.max(1, Math.floor(clean.length * 0.55));
+  const early = average(clean.slice(0, split));
+  const late = average(clean.slice(split));
+  if (!early || !late) return 0.45;
+  return clamp(0.5 + (late / early - 0.94) * 1.45);
+}
+
+function poleCarryControlScore(frames) {
+  const wristCenters = frames
+    .map((frame) => center(frame.pose.landmarks, LM.leftWrist, LM.rightWrist))
+    .filter(Boolean);
+  if (wristCenters.length < 4) return 0.45;
+  const yValues = wristCenters.map((point) => point.y);
+  return consistencyScore(yValues);
+}
+
 function armExtensionScore(landmarks) {
   if (!landmarks) return 0;
   const left = angleBetween(landmarks[LM.leftShoulder], landmarks[LM.leftElbow], landmarks[LM.leftWrist]) ?? 0;
   const right = angleBetween(landmarks[LM.rightShoulder], landmarks[LM.rightElbow], landmarks[LM.rightWrist]) ?? 0;
   return clamp(Math.max(left, right) / 180);
+}
+
+function plantHandPositionScore(landmarks) {
+  if (!landmarks) return 0;
+  const shoulder = center(landmarks, LM.leftShoulder, LM.rightShoulder);
+  const hip = center(landmarks, LM.leftHip, LM.rightHip);
+  const topHandY = Math.min(landmarks[LM.leftWrist]?.y ?? 1, landmarks[LM.rightWrist]?.y ?? 1);
+  if (!shoulder || !hip || topHandY >= 1) return 0;
+  const torso = Math.max(0.05, distance(shoulder, hip) ?? 0.1);
+  return clamp((shoulder.y - topHandY) / torso * 0.72 + armExtensionScore(landmarks) * 0.28);
+}
+
+function plantPositionScore(landmarks, calibration = {}) {
+  const box = calibration.box?.[0];
+  if (!landmarks || !box) return null;
+  const feet = [
+    landmarks[LM.leftAnkle],
+    landmarks[LM.rightAnkle],
+    landmarks[LM.leftFootIndex],
+    landmarks[LM.rightFootIndex],
+    landmarks[LM.leftHeel],
+    landmarks[LM.rightHeel],
+  ].filter(Boolean);
+  if (!feet.length) return null;
+  const takeoffFoot = feet.reduce((lowest, point) => (point.y > lowest.y ? point : lowest), feet[0]);
+  const bodyBox = boundingBox(landmarks);
+  const scale = Math.max(0.04, bodyBox?.height ?? 0.18);
+  return clamp(1 - Math.abs(takeoffFoot.x - box.x) / (scale * 0.34));
 }
 
 function kneeDriveScore(landmarks) {
@@ -641,6 +829,26 @@ function kneeDriveScore(landmarks) {
   if (!hip || !leftKnee || !rightKnee) return 0;
   const bestKneeRise = Math.max(hip.y - leftKnee.y, hip.y - rightKnee.y);
   return clamp(bestKneeRise * 4 + 0.28);
+}
+
+function takeoffAngleDegrees(series, plantIndex) {
+  if (plantIndex < 0 || series.length < 3) return null;
+  const previous = series[Math.max(0, plantIndex - 2)];
+  const next = series[Math.min(series.length - 1, plantIndex + 3)];
+  const previousHip = center(previous?.pose.landmarks, LM.leftHip, LM.rightHip);
+  const nextHip = center(next?.pose.landmarks, LM.leftHip, LM.rightHip);
+  if (!previousHip || !nextHip) return null;
+  const dx = Math.abs(nextHip.x - previousHip.x);
+  const dyUp = previousHip.y - nextHip.y;
+  if (dx < 0.005 && Math.abs(dyUp) < 0.005) return null;
+  return (Math.atan2(dyUp, Math.max(0.004, dx)) * 180) / Math.PI;
+}
+
+function takeoffAngleScore(angle, cameraReliability = 0.68) {
+  if (!Number.isFinite(angle)) return null;
+  const ideal = 18;
+  const tolerance = 18;
+  return clamp(1 - Math.abs(angle - ideal) / tolerance) * cameraReliability;
 }
 
 function trunkLeanDegrees(landmarks) {
@@ -692,6 +900,12 @@ function shoulderHipAlignment(landmarks) {
   return clamp(1 - (shoulderSlope + hipSlope) * 4);
 }
 
+function delayedTurnScore(extensionLandmarks, clearanceLandmarks) {
+  const extensionAlignment = shoulderHipAlignment(extensionLandmarks);
+  const clearanceLine = bodyLineScore({ pose: { landmarks: clearanceLandmarks } });
+  return clamp(extensionAlignment * 0.55 + clearanceLine * 0.45);
+}
+
 function bodyLineScore(frame) {
   const landmarks = frame?.pose?.landmarks;
   if (!landmarks) return 0;
@@ -710,6 +924,139 @@ function calibrationScore(calibration) {
   const markers = ["box", "runway", "bar", "pole"];
   const present = markers.filter((key) => Array.isArray(calibration[key]) && calibration[key].length).length;
   return present / markers.length;
+}
+
+function calibrationNeeds(calibration) {
+  return ["box", "runway", "bar", "pole"].filter((key) => !Array.isArray(calibration[key]) || !calibration[key].length);
+}
+
+function buildCoachingBreakdown(metrics, bodyScores, phaseRanges, confidence, cameraAngle, calibration) {
+  const phaseAt = (key) => phaseRanges.find((phase) => phase.key === key)?.label ?? key;
+  const cameraNote = cameraAngle === "side" ? "side view is strong for this check" : `${cameraAngle} camera angle lowers confidence`;
+  const needs = calibrationNeeds(calibration);
+  const calibrationCue = needs.length
+    ? `Mark ${needs.join(", ")} next time for sharper scoring.`
+    : "All manual markers are present, so the report can use calibration context.";
+
+  return [
+    breakdownItem({
+      id: "approach",
+      phase: phaseAt("approach"),
+      score: averageFinite([bodyScores.approach, metrics.approachRhythm, metrics.approachAcceleration, metrics.poleCarryControl]),
+      focus: "Approach speed and pole carry",
+      good: [
+        scoreSentence("Approach rhythm", metrics.approachRhythm),
+        scoreSentence("Late speed build", metrics.approachAcceleration),
+      ],
+      watch: [
+        scoreSentence("Pole-carry control proxy", metrics.poleCarryControl),
+        "The app estimates pole carry from hand path unless the pole line is marked.",
+      ],
+      measureNext: ["Step consistency over the last three strides.", "Pole angle or hand height as the pole tip drops."],
+      confidence: confidence.pose * metrics.cameraReliability,
+      cameraNote,
+    }),
+    breakdownItem({
+      id: "plant-takeoff",
+      phase: phaseAt("plant-takeoff"),
+      score: averageFinite([
+        bodyScores.plantTakeoff,
+        metrics.plantArmExtension,
+        metrics.plantHandPosition,
+        metrics.plantPosition,
+        metrics.takeoffKneeDrive,
+        metrics.takeoffAngleQuality,
+      ]),
+      focus: "Plant position, hand position, and takeoff angle",
+      good: [
+        scoreSentence("Top-hand extension", metrics.plantArmExtension),
+        scoreSentence("Drive-knee lift", metrics.takeoffKneeDrive),
+      ],
+      watch: [
+        Number.isFinite(metrics.takeoffAngleDegrees)
+          ? `Estimated takeoff angle is ${metrics.takeoffAngleDegrees} degrees.`
+          : "Takeoff angle needs a clearer side-view hip path.",
+        scoreSentence("Foot-to-box match", metrics.plantPosition),
+      ],
+      measureNext: ["Takeoff foot distance from the box.", "Top hand height before the foot leaves the runway."],
+      confidence: confidence.pose * metrics.cameraReliability,
+      cameraNote,
+    }),
+    breakdownItem({
+      id: "swing-rockback",
+      phase: phaseAt("swing-rockback"),
+      score: averageFinite([bodyScores.swingRockback, metrics.trailLegStraightness, metrics.inversionQuality]),
+      focus: "Long swing into rockback",
+      good: [scoreSentence("Trail-leg length", metrics.trailLegStraightness)],
+      watch: [scoreSentence("Inversion entry", metrics.inversionQuality), "A short trail leg usually delays hip rise."],
+      measureNext: ["Trail-leg angle at the bottom of the swing.", "Hip path from takeoff through rockback."],
+      confidence: confidence.pose,
+      cameraNote,
+    }),
+    breakdownItem({
+      id: "extension-turn",
+      phase: phaseAt("extension-turn"),
+      score: averageFinite([bodyScores.extensionTurn, metrics.hipRise, metrics.shoulderHipAlignment, metrics.turnTiming]),
+      focus: "Hip rise, extension, and delayed turn",
+      good: [scoreSentence("Hip rise", metrics.hipRise), scoreSentence("Shoulder-hip alignment", metrics.shoulderHipAlignment)],
+      watch: [scoreSentence("Turn timing", metrics.turnTiming), "Turn feedback is best treated as a prompt for frame review."],
+      measureNext: ["Hip height relative to shoulders at maximum extension.", "Shoulder and hip alignment during the turn."],
+      confidence: confidence.pose * metrics.cameraReliability,
+      cameraNote,
+    }),
+    breakdownItem({
+      id: "clearance-landing",
+      phase: phaseAt("clearance-landing"),
+      score: averageFinite([bodyScores.clearanceLanding, metrics.clearanceLine]),
+      focus: "Body line over the bar",
+      good: [scoreSentence("Clearance body line", metrics.clearanceLine)],
+      watch: ["The bar is not automatically detected; manual bar marking makes this phase more specific.", calibrationCue],
+      measureNext: ["Shoulder-hip-foot line at bar clearance.", "Actual bar position from a marked crossbar."],
+      confidence: confidence.pose * metrics.cameraReliability,
+      cameraNote,
+    }),
+  ];
+}
+
+function breakdownItem({ id, phase, score, focus, good, watch, measureNext, confidence, cameraNote }) {
+  const safeScore = Number.isFinite(score) ? score : 0;
+  return {
+    id,
+    phase,
+    focus,
+    score: round(safeScore, 2),
+    status: statusForScore(safeScore),
+    summary: `${focus}: ${qualityLabel(safeScore)}. ${cameraNote}.`,
+    good: good.filter(Boolean),
+    watch: watch.filter(Boolean),
+    measureNext,
+    confidence: round(confidence ?? 0, 2),
+  };
+}
+
+function average(values) {
+  const clean = values.filter(Number.isFinite);
+  if (!clean.length) return null;
+  return clean.reduce((sum, value) => sum + value, 0) / clean.length;
+}
+
+function averageFinite(values) {
+  return average(values);
+}
+
+function scoreSentence(label, value) {
+  if (!Number.isFinite(value)) return `${label}: not enough data yet.`;
+  return `${label}: ${percentText(value)} (${qualityLabel(value)}).`;
+}
+
+function qualityLabel(score) {
+  if (score >= 0.72) return "strong";
+  if (score >= 0.52) return "workable";
+  return "needs attention";
+}
+
+function percentText(value) {
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "not measured";
 }
 
 function calculateConfidence(activeSeries, metrics, cameraAngle) {
@@ -744,6 +1091,8 @@ function addIssue(issues, issue) {
     score: round(issue.value, 2),
     cue: issue.cue,
     drill: issue.drill,
+    evidence: issue.evidence,
+    measureNext: issue.measureNext,
     confidence: round(confidence, 2),
     status: "needs-work",
   });

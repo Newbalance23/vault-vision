@@ -128,6 +128,10 @@ assert.ok(Number.isInteger(analysis.overallScore));
 assert.ok(Number.isFinite(analysis.bodyScores.upperBody));
 assert.ok(analysis.phaseRanges.every((phase) => Number.isFinite(phase.startTime)));
 assert.ok(analysis.issues.some((issue) => issue.id === "plant-extension" || issue.id === "knee-drive"));
+assert.equal(analysis.coachingBreakdown.length, 5);
+assert.ok(analysis.coachingBreakdown.some((item) => item.id === "plant-takeoff" && item.measureNext.length));
+assert.ok(analysis.researchBasis.some((item) => item.appliedTo.includes("takeoff angle")));
+assert.ok(Number.isFinite(analysis.metrics.takeoffAngleQuality) || analysis.metrics.takeoffAngleQuality === null);
 
 const prioritized = prioritizeIssues(
   scoreIssues(
