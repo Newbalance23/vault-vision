@@ -14,6 +14,10 @@ This project intentionally has no npm build step. Serve the folder over HTTP so 
 
 Then open `http://localhost:4173`.
 
+## Free Local Mode
+
+Vault Vision can run without Supabase. Load a clip, run analysis, and use Save analysis to store a lightweight report in the current browser's local library. Local reports do not upload video or full pose landmarks, so they stay free and device-only.
+
 ## Supabase Setup
 
 1. Create a Supabase project.
