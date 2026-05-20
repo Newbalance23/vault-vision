@@ -979,6 +979,11 @@ button svg,
   width: 100%;
 }
 
+.library-item.is-local {
+  background: #fbf8ef;
+  border-color: #ead6a6;
+}
+
 .library-item:hover {
   border-color: var(--accent);
 }

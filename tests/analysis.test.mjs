@@ -8,6 +8,7 @@ import {
   selectActivePose,
 } from "../src/analysis.js";
 import { LM } from "../src/landmarks.js";
+import { loadLocalSessions, saveLocalSession } from "../src/local-library.js";
 import { angleBetween } from "../src/math.js";
 
 function landmark(x, y, visibility = 0.95) {
@@ -156,5 +157,32 @@ const lowConfidence = analyzeVault({
   videoMeta: { fileName: "low-confidence.mp4", duration: 1 },
 });
 assert.ok(lowConfidence.issues.some((issue) => issue.id === "confidence-warning"));
+
+function mockStorage() {
+  const rows = new Map();
+  return {
+    getItem: (key) => rows.get(key) ?? null,
+    setItem: (key, value) => rows.set(key, value),
+    removeItem: (key) => rows.delete(key),
+  };
+}
+
+const storage = mockStorage();
+const localSession = saveLocalSession(
+  {
+    analysis,
+    athleteName: "Test Vaulter",
+    sessionTitle: "Free browser save",
+    cameraAngle: "side",
+    calibration: { box: [{ x: 0.8, y: 0.78 }] },
+  },
+  storage,
+);
+const localSessions = loadLocalSessions(storage);
+assert.equal(localSessions.length, 1);
+assert.equal(localSessions[0].id, localSession.id);
+assert.equal(localSessions[0].athletes.display_name, "Test Vaulter");
+assert.equal(localSessions[0].analyses[0].result.poseFrames.length, 0);
+assert.equal(localSessions[0].analyses[0].result.localFramesOmitted, true);
 
 console.log("analysis tests passed");

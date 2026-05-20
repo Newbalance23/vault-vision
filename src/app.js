@@ -1,6 +1,7 @@
 import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js";
 import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js";
 import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js";
 import { DEFAULT_SUPABASE_CONFIG } from "./config.js";
 
 const elements = {
@@ -24,6 +25,7 @@ const elements = {
   vaultVideo: document.querySelector("#vaultVideo"),
   overlayCanvas: document.querySelector("#overlayCanvas"),
   emptyVideoState: document.querySelector("#emptyVideoState"),
+  emptyVideoMessage: document.querySelector("#emptyVideoState p"),
   runwaySketch: document.querySelector("#runwaySketch"),
   sessionSnapshot: document.querySelector("#sessionSnapshot"),
   phaseTimeline: document.querySelector("#phaseTimeline"),
@@ -71,6 +73,7 @@ const state = {
   calibration: {},
   activeTool: null,
   library: [],
+  localLibrary: loadLocalSessions(),
   viewMode: "coach",
 };
 
@@ -247,7 +250,7 @@ async function runAnalysis() {
       calibration: state.calibration,
       onProgress: ({ progress, message }) => setProgress(progress, message),
     });
-    elements.saveAnalysisButton.disabled = !state.session || !state.file;
+    elements.saveAnalysisButton.disabled = false;
     elements.exportJsonButton.disabled = false;
     renderResults();
     updateLiveForm();
@@ -287,12 +290,8 @@ function setActiveTool(tool) {
 
 async function saveAnalysis() {
   if (!state.analysis) return;
-  if (!state.session || !state.cloud) {
-    setSetupMessage("Sign in before saving analysis.", true);
-    return;
-  }
-  if (!state.file) {
-    setSetupMessage("Only videos loaded from your device can be saved to cloud storage.", true);
+  if (!state.session || !state.cloud || !state.file) {
+    saveAnalysisLocally();
     return;
   }
   try {
@@ -316,6 +315,27 @@ async function saveAnalysis() {
   }
 }
 
+function saveAnalysisLocally() {
+  try {
+    elements.saveAnalysisButton.disabled = true;
+    const saved = saveLocalSession({
+      analysis: state.analysis,
+      athleteName: elements.athleteNameInput.value,
+      sessionTitle: elements.sessionTitleInput.value,
+      cameraAngle: elements.cameraAngleSelect.value,
+      calibration: state.calibration,
+    });
+    state.localLibrary = loadLocalSessions();
+    setProgress(1, `Saved "${saved.title}" to this browser.`);
+    renderLibrary();
+  } catch (error) {
+    setProgressMessage(error.message, true);
+  } finally {
+    elements.saveAnalysisButton.disabled = false;
+    setTimeout(() => elements.progressBlock.classList.add("hidden"), 1800);
+  }
+}
+
 function exportJson() {
   if (!state.analysis) return;
   const blob = new Blob([JSON.stringify(state.analysis, null, 2)], { type: "application/json" });
@@ -328,6 +348,7 @@ function exportJson() {
 }
 
 async function refreshLibrary() {
+  state.localLibrary = loadLocalSessions();
   if (!state.cloud || !state.session) {
     state.library = [];
     renderLibrary();
@@ -342,6 +363,10 @@ async function refreshLibrary() {
 }
 
 async function loadLibraryItem(item) {
+  if (item.local) {
+    loadLocalLibraryItem(item);
+    return;
+  }
   const analysis = latest(item.analyses)?.result;
   const video = latest(item.videos);
   if (!analysis || !video?.storage_path) return;
@@ -368,6 +393,33 @@ async function loadLibraryItem(item) {
   }
 }
 
+function loadLocalLibraryItem(item) {
+  const analysis = latest(item.analyses)?.result;
+  const video = latest(item.videos);
+  if (!analysis) return;
+  state.file = null;
+  state.sourceName = video?.file_name ?? "saved-report";
+  state.sourceKind = "local";
+  state.analysis = analysis;
+  state.livePreview = null;
+  state.calibration = analysis.calibration ?? item.calibration ?? {};
+  if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
+  state.objectUrl = null;
+  elements.vaultVideo.removeAttribute("src");
+  elements.vaultVideo.load();
+  elements.emptyVideoMessage.textContent = "Saved report loaded. Load the original clip to review the overlay again.";
+  elements.emptyVideoState.classList.remove("hidden");
+  elements.sessionTitleInput.value = item.title ?? "";
+  elements.athleteNameInput.value = item.athletes?.display_name ?? "";
+  elements.cameraAngleSelect.value = analysis.cameraAngle ?? item.camera_angle ?? "auto";
+  elements.runAnalysisButton.disabled = true;
+  elements.saveAnalysisButton.disabled = true;
+  elements.exportJsonButton.disabled = false;
+  renderResults();
+  updateLiveForm();
+  drawCurrentOverlay();
+}
+
 function renderAll() {
   renderAuthState();
   renderSessionSnapshot();
@@ -380,19 +432,19 @@ function renderAuthState() {
     setCloudStatus("Cloud not configured", "muted");
     elements.signOutButton.classList.add("hidden");
     elements.authControls.classList.remove("hidden");
-    elements.saveAnalysisButton.disabled = true;
+    elements.saveAnalysisButton.disabled = !state.analysis;
     return;
   }
   if (state.session?.user) {
     setCloudStatus(`Signed in: ${state.session.user.email}`, "good");
     elements.signOutButton.classList.remove("hidden");
     elements.authControls.classList.add("hidden");
-    elements.saveAnalysisButton.disabled = !state.analysis || !state.file;
+    elements.saveAnalysisButton.disabled = !state.analysis;
   } else {
     setCloudStatus("Cloud ready", "warn");
     elements.signOutButton.classList.add("hidden");
     elements.authControls.classList.remove("hidden");
-    elements.saveAnalysisButton.disabled = true;
+    elements.saveAnalysisButton.disabled = !state.analysis;
   }
 }
 
@@ -454,25 +506,25 @@ function renderTimeline(analysis) {
 }
 
 function renderLibrary() {
-  if (!state.session) {
-    elements.libraryList.innerHTML = '<p class="empty-copy">Sign in to load saved vault sessions.</p>';
-    return;
-  }
-  if (!state.library.length) {
-    elements.libraryList.innerHTML = '<p class="empty-copy">No saved sessions yet.</p>';
+  const rows = state.session ? [...state.library, ...state.localLibrary] : state.localLibrary;
+  if (!rows.length) {
+    elements.libraryList.innerHTML = state.session
+      ? '<p class="empty-copy">No saved sessions yet. Cloud saves need sign-in; local reports save free in this browser.</p>'
+      : '<p class="empty-copy">No local reports yet. Run analysis, then save it free in this browser.</p>';
     return;
   }
   elements.libraryList.innerHTML = "";
-  state.library.forEach((item) => {
+  rows.forEach((item) => {
     const button = document.createElement("button");
-    button.className = "library-item";
+    button.className = `library-item${item.local ? " is-local" : ""}`;
     button.type = "button";
     const athleteName = item.athletes?.display_name ?? "Unnamed vaulter";
     const created = item.created_at ? new Date(item.created_at).toLocaleDateString() : "";
     const video = latest(item.videos);
+    const source = item.local ? "This browser" : "Cloud";
     button.innerHTML = `
       <h3>${escapeHtml(item.title ?? "Vault review")}</h3>
-      <p>${escapeHtml(athleteName)} &middot; ${escapeHtml(created)} &middot; ${escapeHtml(video?.file_name ?? "video")}</p>
+      <p>${escapeHtml(athleteName)} &middot; ${escapeHtml(created)} &middot; ${escapeHtml(source)} &middot; ${escapeHtml(video?.file_name ?? "video")}</p>
     `;
     button.addEventListener("click", () => loadLibraryItem(item));
     elements.libraryList.append(button);
@@ -724,6 +776,7 @@ function loadVideoSource({ url, name, kind, file = null, objectUrl = false }) {
     elements.vaultVideo.removeAttribute("crossorigin");
   }
   elements.vaultVideo.src = url;
+  elements.emptyVideoMessage.textContent = "Load a pole vault clip to begin review.";
   elements.emptyVideoState.classList.add("hidden");
   elements.sessionTitleInput.value ||= state.sourceName.replace(/\.[^.]+$/, "");
   elements.runAnalysisButton.disabled = false;
