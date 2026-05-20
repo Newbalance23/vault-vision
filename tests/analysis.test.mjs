@@ -130,6 +130,16 @@ assert.ok(analysis.phaseRanges.every((phase) => Number.isFinite(phase.startTime)
 assert.ok(analysis.issues.some((issue) => issue.id === "plant-extension" || issue.id === "knee-drive"));
 assert.equal(analysis.coachingBreakdown.length, 5);
 assert.ok(analysis.coachingBreakdown.some((item) => item.id === "plant-takeoff" && item.measureNext.length));
+assert.ok(analysis.vaultStyle?.label, "analysis should classify a vault style");
+assert.ok(analysis.vaultStyle.bestPhase?.label, "vault style should expose the strongest phase");
+assert.ok(analysis.vaultStyle.workPhase?.label, "vault style should expose the next limiter");
+assert.equal(analysis.vaultReport.pattern, "analysis-style-metrics-drills");
+assert.deepEqual(
+  analysis.vaultReport.sections.map((section) => section.id),
+  ["analysis", "style", "metrics", "drills"],
+);
+assert.ok(analysis.vaultReport.metrics.some((metric) => metric.label === "Takeoff angle"));
+assert.ok(analysis.vaultReport.drills.length > 0);
 assert.ok(analysis.researchBasis.some((item) => item.appliedTo.includes("takeoff angle")));
 assert.ok(Number.isFinite(analysis.metrics.takeoffAngleQuality) || analysis.metrics.takeoffAngleQuality === null);
 
@@ -161,6 +171,7 @@ const lowConfidence = analyzeVault({
   videoMeta: { fileName: "low-confidence.mp4", duration: 1 },
 });
 assert.ok(lowConfidence.issues.some((issue) => issue.id === "confidence-warning"));
+assert.equal(lowConfidence.vaultStyle.id, "needs-clearer-video");
 
 function mockStorage() {
   const rows = new Map();
