@@ -107,6 +107,38 @@ assert.ok(
   "moving vaulter track should beat stationary foreground subject",
 );
 
+const swappingFrames = Array.from({ length: 34 }, (_, index) => {
+  const spectator = { landmarks: makePose({ x: 0.86, scale: 1.25, visibility: 0.96 }) };
+  const vaulter = {
+    landmarks: makePose({
+      x: 0.12 + index * 0.018,
+      hipY: index > 20 ? 0.38 : 0.62,
+      ankleY: index > 20 ? 0.32 : 0.84,
+      scale: 0.64,
+      visibility: index > 18 ? 0.72 : 0.9,
+    }),
+  };
+  const poses = index >= 13 && index <= 16 ? [spectator] : index < 13 ? [spectator, vaulter] : [vaulter, spectator];
+  return {
+    time: index / 10,
+    activePoseIndex: -1,
+    poses,
+  };
+});
+assignActivePoseTrack(swappingFrames);
+assert.ok(
+  swappingFrames.slice(0, 13).filter((frame) => frame.activePoseIndex === 1).length >= 11,
+  "tracker should follow the moving vaulter before the pose order swaps",
+);
+assert.ok(
+  swappingFrames.slice(13, 17).every((frame) => frame.activePoseIndex === -1),
+  "tracker should not jump to a spectator when the vaulter disappears briefly",
+);
+assert.ok(
+  swappingFrames.slice(17).filter((frame) => frame.activePoseIndex === 0).length >= 14,
+  "tracker should reacquire the same vaulter after occlusion and pose index swaps",
+);
+
 const frames = makeFrames();
 const activeSeries = frames.map((frame) => ({ time: frame.time, pose: frame.poses[0] }));
 const phases = detectPhases(activeSeries, 8);

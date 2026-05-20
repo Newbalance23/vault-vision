@@ -28,6 +28,10 @@ const CAMERA_RELIABILITY = Object.freeze({
   rear: 0.58,
 });
 
+const TRACK_MAX_GAP = 12;
+const TRACK_MIN_CORE_CONFIDENCE = 0.2;
+const TRACK_MIN_FILL_CONFIDENCE = 0.18;
+
 const VAULT_STYLE_DEFINITIONS = Object.freeze([
   {
     id: "speed-builder",
@@ -178,38 +182,32 @@ export function selectActivePose(poses = []) {
 export function assignActivePoseTrack(poseFrames = []) {
   const tracks = [];
   poseFrames.forEach((frame, frameIndex) => {
-    const observations = frame.poses
-      .map((pose, poseIndex) => ({
-        frameIndex,
-        poseIndex,
-        center: poseCenter(pose.landmarks),
-        box: boundingBox(pose.landmarks),
-        confidence: averageConfidence(pose.landmarks, REQUIRED_GROUPS.core),
-      }))
-      .filter((observation) => observation.center && observation.confidence > 0.25);
+    const observations = poseObservations(frame, frameIndex);
+    const matches = [];
 
-    const claimedTracks = new Set();
     observations.forEach((observation) => {
-      let bestTrack = null;
-      let bestDistance = Infinity;
       tracks.forEach((track) => {
-        if (claimedTracks.has(track.id)) return;
-        const last = track.observations.at(-1);
-        if (!last || frameIndex - last.frameIndex > 5) return;
-        const centerDistance = distance2d(observation.center, last.center);
-        const maxDistance = 0.18 + Math.min(0.12, (frameIndex - last.frameIndex) * 0.01);
-        if (centerDistance < maxDistance && centerDistance < bestDistance) {
-          bestTrack = track;
-          bestDistance = centerDistance;
-        }
+        const match = trackMatch(track, observation, frameIndex);
+        if (match) matches.push({ track, observation, ...match });
       });
+    });
 
-      if (!bestTrack) {
-        bestTrack = { id: tracks.length, observations: [] };
-        tracks.push(bestTrack);
-      }
-      bestTrack.observations.push(observation);
-      claimedTracks.add(bestTrack.id);
+    matches.sort((a, b) => a.cost - b.cost);
+    const claimedTracks = new Set();
+    const claimedObservations = new Set();
+
+    matches.forEach((match) => {
+      if (claimedTracks.has(match.track.id) || claimedObservations.has(match.observation)) return;
+      pushTrackObservation(match.track, match.observation);
+      claimedTracks.add(match.track.id);
+      claimedObservations.add(match.observation);
+    });
+
+    observations.forEach((observation) => {
+      if (claimedObservations.has(observation)) return;
+      const track = { id: tracks.length, observations: [], velocity: { x: 0, y: 0 } };
+      pushTrackObservation(track, observation);
+      tracks.push(track);
     });
   });
 
@@ -217,11 +215,16 @@ export function assignActivePoseTrack(poseFrames = []) {
     .map((track) => ({ track, score: activeTrackScore(track, poseFrames.length) }))
     .sort((a, b) => b.score - a.score)[0]?.track;
 
-  poseFrames.forEach((frame) => {
-    frame.activePoseIndex = selectActivePose(frame.poses);
-  });
+  if (!bestTrack) {
+    poseFrames.forEach((frame) => {
+      frame.activePoseIndex = selectActivePose(frame.poses);
+    });
+    return poseFrames;
+  }
 
-  if (!bestTrack) return poseFrames;
+  poseFrames.forEach((frame) => {
+    frame.activePoseIndex = -1;
+  });
   bestTrack.observations.forEach((observation) => {
     poseFrames[observation.frameIndex].activePoseIndex = observation.poseIndex;
   });
@@ -675,10 +678,80 @@ function distance2d(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function lerp(a, b, amount) {
+  return a + (b - a) * amount;
+}
+
+function poseObservations(frame, frameIndex) {
+  return (frame.poses ?? [])
+    .map((pose, poseIndex) => {
+      const landmarks = pose.landmarks ?? pose;
+      const box = boundingBox(landmarks);
+      const centerPoint = poseCenter(landmarks);
+      const confidence = averageConfidence(landmarks, REQUIRED_GROUPS.core);
+      return {
+        frameIndex,
+        poseIndex,
+        center: centerPoint,
+        box,
+        confidence,
+      };
+    })
+    .filter((observation) => observation.center && observation.confidence >= TRACK_MIN_CORE_CONFIDENCE);
+}
+
+function trackMatch(track, observation, frameIndex) {
+  const last = track.observations.at(-1);
+  if (!last) return null;
+  const gap = frameIndex - last.frameIndex;
+  if (gap < 1 || gap > TRACK_MAX_GAP) return null;
+
+  const predictedCenter = predictTrackCenter(track, frameIndex);
+  const centerDistance = distance2d(observation.center, predictedCenter);
+  const speed = distance2d({ x: 0, y: 0 }, track.velocity ?? { x: 0, y: 0 });
+  const maxDistance = clamp(0.13 + gap * 0.025 + speed * gap * 0.55, 0.15, 0.42);
+  const overlap = boxIou(observation.box, last.box);
+  const sizeDelta = boxScaleDelta(observation.box, last.box);
+
+  if (centerDistance > maxDistance && overlap < 0.04) return null;
+  if (sizeDelta > 1.45 && overlap < 0.08) return null;
+
+  return {
+    cost: centerDistance / maxDistance + sizeDelta * 0.24 + gap * 0.025 - overlap * 0.42 - observation.confidence * 0.06,
+  };
+}
+
+function pushTrackObservation(track, observation) {
+  const previous = track.observations.at(-1);
+  if (previous) {
+    const gap = Math.max(1, observation.frameIndex - previous.frameIndex);
+    track.velocity = {
+      x: (observation.center.x - previous.center.x) / gap,
+      y: (observation.center.y - previous.center.y) / gap,
+    };
+  }
+  track.observations.push(observation);
+}
+
+function predictTrackCenter(track, frameIndex) {
+  const last = track.observations.at(-1);
+  if (!last) return null;
+  const gap = Math.max(0, frameIndex - last.frameIndex);
+  return {
+    x: clamp(last.center.x + (track.velocity?.x ?? 0) * gap, -0.2, 1.2),
+    y: clamp(last.center.y + (track.velocity?.y ?? 0) * gap, -0.2, 1.2),
+  };
+}
+
 function activeTrackScore(track, totalFrames) {
   const observations = track.observations;
   if (observations.length < 2) return 0;
   const coverage = observations.length / Math.max(1, totalFrames);
+  const firstFrame = observations[0].frameIndex;
+  const lastFrame = observations.at(-1).frameIndex;
+  const span = Math.max(1, lastFrame - firstFrame + 1);
+  const spanCoverage = span / Math.max(1, totalFrames);
+  const continuity = observations.length / span;
   const path = observations.slice(1).reduce((sum, observation, index) => {
     return sum + distance2d(observation.center, observations[index].center);
   }, 0);
@@ -687,42 +760,136 @@ function activeTrackScore(track, totalFrames) {
   const displacement = distance2d(first, last);
   const yValues = observations.map((observation) => observation.center.y);
   const verticalTravel = Math.max(...yValues) - Math.min(...yValues);
+  const verticalLift = Math.max(0, first.y - Math.min(...yValues));
   const xValues = observations.map((observation) => observation.center.x);
   const horizontalTravel = Math.max(...xValues) - Math.min(...xValues);
+  const meanConfidence =
+    observations.reduce((sum, observation) => sum + (observation.confidence ?? 0), 0) / Math.max(1, observations.length);
   const meanArea =
     observations.reduce((sum, observation) => sum + (observation.box?.area ?? 0), 0) / Math.max(1, observations.length);
-  const stationaryPenalty = path < 0.08 ? 0.28 : 1;
+  const earlyPresence = 1 - Math.min(1, firstFrame / Math.max(1, totalFrames * 0.45));
+  const finishPresence = Math.min(1, lastFrame / Math.max(1, totalFrames * 0.65));
+  const stationaryPenalty = path < 0.08 && horizontalTravel < 0.05 ? 0.2 : 1;
   return (
-    (path * 2.4 + displacement * 1.8 + horizontalTravel * 1.2 + verticalTravel * 1.35 + coverage * 0.22 + meanArea * 0.05) *
+    (path * 2.2 +
+      displacement * 1.6 +
+      horizontalTravel * 1.35 +
+      verticalTravel * 1.3 +
+      verticalLift * 1.15 +
+      coverage * 0.42 +
+      spanCoverage * 0.52 +
+      continuity * 0.34 +
+      meanConfidence * 0.18 +
+      earlyPresence * 0.08 +
+      finishPresence * 0.12 +
+      meanArea * 0.03) *
     stationaryPenalty
   );
 }
 
 function fillTrackGaps(poseFrames, track) {
   const observationsByFrame = new Map(track.observations.map((observation) => [observation.frameIndex, observation]));
-  let lastCenter = null;
+  const observations = [...track.observations].sort((a, b) => a.frameIndex - b.frameIndex);
   poseFrames.forEach((frame, frameIndex) => {
     const observation = observationsByFrame.get(frameIndex);
     if (observation) {
-      lastCenter = observation.center;
       return;
     }
-    if (!lastCenter || !frame.poses.length) return;
-    let bestPoseIndex = frame.activePoseIndex;
-    let bestDistance = Infinity;
-    frame.poses.forEach((pose, poseIndex) => {
-      const centerPoint = poseCenter(pose.landmarks);
-      const d = distance2d(centerPoint, lastCenter);
-      if (d < bestDistance) {
-        bestDistance = d;
-        bestPoseIndex = poseIndex;
-      }
-    });
-    if (bestDistance < 0.22) {
-      frame.activePoseIndex = bestPoseIndex;
-      lastCenter = poseCenter(frame.poses[bestPoseIndex].landmarks);
-    }
+    if (!frame.poses.length) return;
+    const expected = expectedTrackAtFrame(observations, frameIndex);
+    if (!expected) return;
+    const fill = closestPoseToExpected(frame, expected);
+    if (fill) frame.activePoseIndex = fill.poseIndex;
   });
+}
+
+function expectedTrackAtFrame(observations, frameIndex) {
+  const previous = [...observations].reverse().find((observation) => observation.frameIndex < frameIndex);
+  const next = observations.find((observation) => observation.frameIndex > frameIndex);
+
+  if (previous && next) {
+    const gap = next.frameIndex - previous.frameIndex;
+    if (gap > TRACK_MAX_GAP) return null;
+    const amount = (frameIndex - previous.frameIndex) / Math.max(1, gap);
+    return {
+      center: {
+        x: lerp(previous.center.x, next.center.x, amount),
+        y: lerp(previous.center.y, next.center.y, amount),
+      },
+      referenceBox: amount < 0.5 ? previous.box : next.box,
+      maxDistance: clamp(0.1 + gap * 0.012, 0.12, 0.26),
+    };
+  }
+
+  if (previous && frameIndex - previous.frameIndex <= 4) {
+    return {
+      center: predictFromObservationPair(observations, previous, frameIndex),
+      referenceBox: previous.box,
+      maxDistance: 0.16 + (frameIndex - previous.frameIndex) * 0.025,
+    };
+  }
+
+  if (next && next.frameIndex - frameIndex <= 4) {
+    return {
+      center: next.center,
+      referenceBox: next.box,
+      maxDistance: 0.16 + (next.frameIndex - frameIndex) * 0.025,
+    };
+  }
+
+  return null;
+}
+
+function closestPoseToExpected(frame, expected) {
+  let best = null;
+  frame.poses.forEach((pose, poseIndex) => {
+    const landmarks = pose.landmarks ?? pose;
+    const confidence = averageConfidence(landmarks, REQUIRED_GROUPS.core);
+    if (confidence < TRACK_MIN_FILL_CONFIDENCE) return;
+    const centerPoint = poseCenter(landmarks);
+    const box = boundingBox(landmarks);
+    const centerDistance = distance2d(centerPoint, expected.center);
+    const sizeDelta = boxScaleDelta(box, expected.referenceBox);
+    if (centerDistance > expected.maxDistance || sizeDelta > 0.9) return;
+    const overlap = boxIou(box, expected.referenceBox);
+    const score = centerDistance / expected.maxDistance + sizeDelta * 0.22 - overlap * 0.16 - confidence * 0.04;
+    if (!best || score < best.score) best = { poseIndex, score };
+  });
+  return best;
+}
+
+function predictFromObservationPair(observations, previous, frameIndex) {
+  const previousIndex = observations.findIndex((observation) => observation === previous);
+  const before = observations[previousIndex - 1];
+  if (!before) return previous.center;
+  const gap = Math.max(1, previous.frameIndex - before.frameIndex);
+  const velocity = {
+    x: (previous.center.x - before.center.x) / gap,
+    y: (previous.center.y - before.center.y) / gap,
+  };
+  const forward = frameIndex - previous.frameIndex;
+  return {
+    x: clamp(previous.center.x + velocity.x * forward, -0.2, 1.2),
+    y: clamp(previous.center.y + velocity.y * forward, -0.2, 1.2),
+  };
+}
+
+function boxIou(a, b) {
+  if (!a || !b) return 0;
+  const left = Math.max(a.minX, b.minX);
+  const right = Math.min(a.maxX, b.maxX);
+  const top = Math.max(a.minY, b.minY);
+  const bottom = Math.min(a.maxY, b.maxY);
+  const width = Math.max(0, right - left);
+  const height = Math.max(0, bottom - top);
+  const intersection = width * height;
+  const union = (a.area ?? 0) + (b.area ?? 0) - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+function boxScaleDelta(a, b) {
+  if (!a?.area || !b?.area) return 0.6;
+  return Math.min(2, Math.abs(Math.log((a.area + 0.00001) / (b.area + 0.00001))));
 }
 
 function stripPoint(point) {

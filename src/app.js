@@ -1,8 +1,8 @@
-import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-20-ochy-report";
-import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js?v=2026-05-20-ochy-report";
-import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-20-ochy-report";
-import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-20-ochy-report";
-import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-20-ochy-report";
+import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-20-tracking";
+import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js?v=2026-05-20-tracking";
+import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-20-tracking";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-20-tracking";
+import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-20-tracking";
 
 const elements = {
   appShell: document.querySelector(".app-shell"),

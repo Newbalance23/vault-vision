@@ -1,4 +1,4 @@
-import { analyzeVault, annotateFrameScores } from "./analysis.js?v=2026-05-20-ochy-report";
+import { analyzeVault, annotateFrameScores } from "./analysis.js?v=2026-05-20-tracking";
 
 const TASKS_VERSION = "latest";
 const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;
@@ -13,7 +13,7 @@ const MODEL_PATHS = Object.freeze({
 let mediaPipeModule;
 const landmarkerCache = new Map();
 
-export async function createPoseLandmarker({ modelVariant = "full", numPoses = 4 } = {}) {
+export async function createPoseLandmarker({ modelVariant = "full", numPoses = 6 } = {}) {
   const cacheKey = `${modelVariant}:${numPoses}`;
   if (landmarkerCache.has(cacheKey)) return landmarkerCache.get(cacheKey);
 
@@ -30,9 +30,9 @@ export async function createPoseLandmarker({ modelVariant = "full", numPoses = 4
     },
     runningMode: "VIDEO",
     numPoses,
-    minPoseDetectionConfidence: 0.45,
-    minPosePresenceConfidence: 0.45,
-    minTrackingConfidence: 0.45,
+    minPoseDetectionConfidence: 0.35,
+    minPosePresenceConfidence: 0.35,
+    minTrackingConfidence: 0.35,
   });
 
   landmarkerCache.set(cacheKey, landmarker);
@@ -44,7 +44,7 @@ export async function analyzeVideoWithPose(video, options = {}) {
     fileName = "vault-video",
     sampleRate = 12,
     modelVariant = "full",
-    numPoses = 4,
+    numPoses = 6,
     cameraAngle = "auto",
     calibration = {},
     onProgress = () => {},
@@ -102,7 +102,7 @@ export async function analyzeVideoWithPose(video, options = {}) {
 export async function detectVideoFrame(video, options = {}) {
   const {
     modelVariant = "lite",
-    numPoses = 4,
+    numPoses = 6,
     cameraAngle = "auto",
     duration = video.duration || 0,
   } = options;
