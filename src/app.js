@@ -1,8 +1,8 @@
-import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js";
-import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js";
-import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js";
-import { loadLocalSessions, saveLocalSession } from "./local-library.js";
-import { DEFAULT_SUPABASE_CONFIG } from "./config.js";
+import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-20-research-analysis";
+import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js?v=2026-05-20-research-analysis";
+import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-20-research-analysis";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-20-research-analysis";
+import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-20-research-analysis";
 
 const elements = {
   appShell: document.querySelector(".app-shell"),
@@ -52,6 +52,7 @@ const elements = {
   confidenceBadge: document.querySelector("#confidenceBadge"),
   scoreSummary: document.querySelector("#scoreSummary"),
   actionPlan: document.querySelector("#actionPlan"),
+  technicalBreakdown: document.querySelector("#technicalBreakdown"),
   issuesList: document.querySelector("#issuesList"),
   metricsGrid: document.querySelector("#metricsGrid"),
   libraryList: document.querySelector("#libraryList"),
@@ -458,6 +459,8 @@ function renderResults() {
     elements.scoreSummary.innerHTML = "";
     elements.actionPlan.classList.add("hidden");
     elements.actionPlan.innerHTML = "";
+    elements.technicalBreakdown.classList.add("hidden");
+    elements.technicalBreakdown.innerHTML = "";
     elements.issuesList.innerHTML = '<p class="empty-copy">Analysis feedback will appear here.</p>';
     elements.metricsGrid.innerHTML = '<p class="empty-copy">Run analysis to calculate phase and body-line metrics.</p>';
     elements.phaseTimeline.innerHTML = "";
@@ -480,6 +483,8 @@ function renderResults() {
           </div>
           <p>${escapeHtml(issue.cue)}</p>
           <p><strong>Drill:</strong> ${escapeHtml(issue.drill)}</p>
+          ${issue.evidence ? `<p><strong>Evidence:</strong> ${escapeHtml(issue.evidence)}</p>` : ""}
+          ${issue.measureNext ? `<p><strong>Measure next:</strong> ${escapeHtml(issue.measureNext)}</p>` : ""}
         </article>
       `,
     )
@@ -489,6 +494,8 @@ function renderResults() {
   elements.scoreSummary.innerHTML = renderScoreSummary(analysis);
   elements.actionPlan.classList.remove("hidden");
   elements.actionPlan.innerHTML = renderActionPlan(analysis);
+  elements.technicalBreakdown.classList.remove("hidden");
+  elements.technicalBreakdown.innerHTML = renderTechnicalBreakdown(analysis);
   elements.metricsGrid.innerHTML = metricTiles(analysis.metrics).join("");
   renderTimeline(analysis);
   window.lucide?.createIcons();
@@ -535,14 +542,63 @@ function metricTiles(metrics) {
   const rows = [
     ["Frames", metrics.frameCount],
     ["Approach", percent(metrics.approachRhythm)],
+    ["Speed build", percent(metrics.approachAcceleration)],
+    ["Pole carry", percent(metrics.poleCarryControl)],
     ["Plant arms", percent(metrics.plantArmExtension)],
+    ["Plant hands", percent(metrics.plantHandPosition)],
+    ["Foot/box", percent(metrics.plantPosition)],
+    ["Takeoff angle", Number.isFinite(metrics.takeoffAngleDegrees) ? `${metrics.takeoffAngleDegrees}deg` : null],
     ["Knee drive", percent(metrics.takeoffKneeDrive)],
     ["Trail leg", percent(metrics.trailLegStraightness)],
     ["Inversion", percent(metrics.inversionQuality)],
     ["Hip rise", percent(metrics.hipRise)],
+    ["Turn timing", percent(metrics.turnTiming)],
     ["Clearance", percent(metrics.clearanceLine)],
   ];
   return rows.map(([label, value]) => `<div class="metric-tile"><span>${label}</span><strong>${value ?? "N/A"}</strong></div>`);
+}
+
+function renderTechnicalBreakdown(analysis) {
+  const rows = analysis.coachingBreakdown ?? [];
+  if (!rows.length) return "";
+  return `
+    <div class="breakdown-heading">
+      <div>
+        <p class="eyebrow">Research pass</p>
+        <h3>Phase-by-phase analysis</h3>
+      </div>
+      <span>${rows.length} phases</span>
+    </div>
+    <div class="breakdown-grid">
+      ${rows
+        .map(
+          (item) => `
+            <article class="breakdown-card tone-${escapeHtml(item.status)}">
+              <div class="breakdown-card-head">
+                <span>${escapeHtml(item.phase)}</span>
+                <strong>${Math.round((item.score ?? 0) * 100)}%</strong>
+              </div>
+              <h4>${escapeHtml(item.focus)}</h4>
+              <p>${escapeHtml(item.summary)}</p>
+              ${breakdownList("Looks good", item.good)}
+              ${breakdownList("Needs review", item.watch)}
+              ${breakdownList("Measure next", item.measureNext)}
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function breakdownList(label, items = []) {
+  if (!items.length) return "";
+  return `
+    <div class="breakdown-list">
+      <span>${escapeHtml(label)}</span>
+      ${items.slice(0, 3).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}
+    </div>
+  `;
 }
 
 function renderScoreSummary(analysis) {

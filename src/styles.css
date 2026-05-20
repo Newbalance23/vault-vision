@@ -886,6 +886,94 @@ button svg,
   padding: 6px 9px;
 }
 
+.technical-breakdown {
+  background: #fbfdfc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.breakdown-heading,
+.breakdown-card-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.breakdown-heading h3 {
+  font-size: 1rem;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.breakdown-heading > span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.breakdown-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 11px;
+}
+
+.breakdown-card {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--gray);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.breakdown-card.tone-good {
+  border-left-color: var(--green);
+}
+
+.breakdown-card.tone-okay {
+  border-left-color: var(--amber);
+}
+
+.breakdown-card.tone-bad {
+  border-left-color: var(--red);
+}
+
+.breakdown-card-head span,
+.breakdown-list span {
+  color: var(--muted);
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.breakdown-card-head strong {
+  color: var(--ink);
+  font-size: 0.94rem;
+}
+
+.breakdown-card h4 {
+  font-size: 0.95rem;
+  line-height: 1.25;
+  margin: 7px 0 6px;
+}
+
+.breakdown-card p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 5px 0 0;
+}
+
+.breakdown-list {
+  border-top: 1px solid var(--line);
+  margin-top: 9px;
+  padding-top: 8px;
+}
+
 .issue-item,
 .library-item {
   border: 1px solid var(--line);
