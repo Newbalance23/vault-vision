@@ -38,6 +38,8 @@ V1 uses MediaPipe Pose Landmarker and transparent rules. It does not train a cus
 & "C:\Users\heroc\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" tests/analysis.test.mjs
 ```
 
+GitHub Actions also runs these tests on every push and pull request to `main`.
+
 ## Local Video QA
 
 For repeatable testing with a local clip, serve the clip folder with `tools/cors_static_server.py` and open the app with `?video=<encoded video url>&name=<file name>`. This is only for local QA; normal users should use the Load video button.

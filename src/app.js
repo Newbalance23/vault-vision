@@ -4,6 +4,9 @@ import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supa
 import { DEFAULT_SUPABASE_CONFIG } from "./config.js";
 
 const elements = {
+  appShell: document.querySelector(".app-shell"),
+  coachModeButton: document.querySelector("#coachModeButton"),
+  athleteModeButton: document.querySelector("#athleteModeButton"),
   cloudStatus: document.querySelector("#cloudStatus"),
   refreshLibraryButton: document.querySelector("#refreshLibraryButton"),
   signOutButton: document.querySelector("#signOutButton"),
@@ -22,7 +25,9 @@ const elements = {
   overlayCanvas: document.querySelector("#overlayCanvas"),
   emptyVideoState: document.querySelector("#emptyVideoState"),
   runwaySketch: document.querySelector("#runwaySketch"),
+  sessionSnapshot: document.querySelector("#sessionSnapshot"),
   phaseTimeline: document.querySelector("#phaseTimeline"),
+  phaseLegend: document.querySelector("#phaseLegend"),
   timeSlider: document.querySelector("#timeSlider"),
   timeReadout: document.querySelector("#timeReadout"),
   liveFormStrip: document.querySelector("#liveFormStrip"),
@@ -44,6 +49,7 @@ const elements = {
   progressText: document.querySelector("#progressText"),
   confidenceBadge: document.querySelector("#confidenceBadge"),
   scoreSummary: document.querySelector("#scoreSummary"),
+  actionPlan: document.querySelector("#actionPlan"),
   issuesList: document.querySelector("#issuesList"),
   metricsGrid: document.querySelector("#metricsGrid"),
   libraryList: document.querySelector("#libraryList"),
@@ -65,6 +71,7 @@ const state = {
   calibration: {},
   activeTool: null,
   library: [],
+  viewMode: "coach",
 };
 
 init();
@@ -72,6 +79,7 @@ init();
 async function init() {
   drawRunwaySketch(elements.runwaySketch);
   bindEvents();
+  setReviewMode("coach");
   hydrateConfig();
   await initCloud();
   loadVideoFromQuery();
@@ -81,6 +89,9 @@ async function init() {
 }
 
 function bindEvents() {
+  [elements.coachModeButton, elements.athleteModeButton].forEach((button) => {
+    button.addEventListener("click", () => setReviewMode(button.dataset.mode));
+  });
   elements.saveConfigButton.addEventListener("click", handleSaveConfig);
   elements.signInButton.addEventListener("click", () => handleAuth("signIn"));
   elements.signUpButton.addEventListener("click", () => handleAuth("signUp"));
@@ -359,6 +370,7 @@ async function loadLibraryItem(item) {
 
 function renderAll() {
   renderAuthState();
+  renderSessionSnapshot();
   renderResults();
   renderLibrary();
 }
@@ -386,14 +398,18 @@ function renderAuthState() {
 
 function renderResults() {
   const analysis = state.analysis;
+  renderSessionSnapshot();
   if (!analysis) {
     elements.confidenceBadge.textContent = "No analysis";
     elements.confidenceBadge.className = "status-pill status-muted";
     elements.scoreSummary.classList.add("hidden");
     elements.scoreSummary.innerHTML = "";
+    elements.actionPlan.classList.add("hidden");
+    elements.actionPlan.innerHTML = "";
     elements.issuesList.innerHTML = '<p class="empty-copy">Analysis feedback will appear here.</p>';
     elements.metricsGrid.innerHTML = '<p class="empty-copy">Run analysis to calculate phase and body-line metrics.</p>';
     elements.phaseTimeline.innerHTML = "";
+    elements.phaseLegend.innerHTML = "";
     window.lucide?.createIcons();
     return;
   }
@@ -419,6 +435,8 @@ function renderResults() {
 
   elements.scoreSummary.classList.remove("hidden");
   elements.scoreSummary.innerHTML = renderScoreSummary(analysis);
+  elements.actionPlan.classList.remove("hidden");
+  elements.actionPlan.innerHTML = renderActionPlan(analysis);
   elements.metricsGrid.innerHTML = metricTiles(analysis.metrics).join("");
   renderTimeline(analysis);
   window.lucide?.createIcons();
@@ -432,6 +450,7 @@ function renderTimeline(analysis) {
       return `<span class="phase-segment ${phase.className}" title="${escapeHtml(phase.label)}" style="width: ${width}%"></span>`;
     })
     .join("");
+  elements.phaseLegend.innerHTML = renderPhaseLegend(analysis);
 }
 
 function renderLibrary() {
@@ -453,7 +472,7 @@ function renderLibrary() {
     const video = latest(item.videos);
     button.innerHTML = `
       <h3>${escapeHtml(item.title ?? "Vault review")}</h3>
-      <p>${escapeHtml(athleteName)} · ${escapeHtml(created)} · ${escapeHtml(video?.file_name ?? "video")}</p>
+      <p>${escapeHtml(athleteName)} &middot; ${escapeHtml(created)} &middot; ${escapeHtml(video?.file_name ?? "video")}</p>
     `;
     button.addEventListener("click", () => loadLibraryItem(item));
     elements.libraryList.append(button);
@@ -506,6 +525,164 @@ function renderScoreSummary(analysis) {
   `;
 }
 
+function renderSessionSnapshot() {
+  const analysis = state.analysis;
+  if (analysis) {
+    const primaryIssue = primaryCoachingIssue(analysis);
+    const confidence = Math.round((analysis.confidence?.overall ?? 0) * 100);
+    elements.sessionSnapshot.innerHTML = [
+      snapshotCard("Vault score", String(analysis.overallScore ?? 0), scoreTone(analysis.overallScore ?? 0), "trending-up"),
+      snapshotCard("Top focus", primaryIssue?.title ?? "Frame review", priorityTone(primaryIssue?.priority), "target"),
+      snapshotCard("Confidence", `${confidence}%`, confidence >= 72 ? "good" : confidence >= 48 ? "okay" : "bad", "radar"),
+      snapshotCard("Mode", state.viewMode === "athlete" ? "Athlete" : "Coach", "neutral", state.viewMode === "athlete" ? "sparkles" : "clipboard-check"),
+    ].join("");
+    window.lucide?.createIcons();
+    return;
+  }
+
+  if (state.sourceName) {
+    elements.sessionSnapshot.innerHTML = [
+      snapshotCard("Clip", state.sourceName, "neutral", "video"),
+      snapshotCard("Overlay", state.livePreview ? "Tracking" : "Ready", state.livePreview ? "good" : "neutral", "activity"),
+      snapshotCard("Score", "--", "neutral", "gauge"),
+      snapshotCard("Mode", state.viewMode === "athlete" ? "Athlete" : "Coach", "neutral", state.viewMode === "athlete" ? "sparkles" : "clipboard-check"),
+    ].join("");
+  } else {
+    elements.sessionSnapshot.innerHTML = [
+      snapshotCard("Status", "Ready", "good", "zap"),
+      snapshotCard("Video", "No clip", "neutral", "video"),
+      snapshotCard("Overlay", "Standby", "neutral", "activity"),
+      snapshotCard("Mode", state.viewMode === "athlete" ? "Athlete" : "Coach", "neutral", state.viewMode === "athlete" ? "sparkles" : "clipboard-check"),
+    ].join("");
+  }
+  window.lucide?.createIcons();
+}
+
+function snapshotCard(label, value, tone, icon) {
+  return `
+    <article class="snapshot-card tone-${tone}">
+      <i data-lucide="${icon}"></i>
+      <div>
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+    </article>
+  `;
+}
+
+function renderPhaseLegend(analysis) {
+  const phaseScores = {
+    approach: analysis.bodyScores?.approach,
+    "plant-takeoff": analysis.bodyScores?.plantTakeoff,
+    "swing-rockback": analysis.bodyScores?.swingRockback,
+    "extension-turn": analysis.bodyScores?.extensionTurn,
+    "clearance-landing": analysis.bodyScores?.clearanceLanding,
+  };
+  return analysis.phaseRanges
+    .map((phase) => {
+      const score = phaseScores[phase.key];
+      const scoreText = Number.isFinite(score) ? `${Math.round(score * 100)}%` : "--";
+      return `
+        <span class="phase-chip ${phase.className}">
+          <i></i>
+          ${escapeHtml(phase.label)}
+          <strong>${scoreText}</strong>
+        </span>
+      `;
+    })
+    .join("");
+}
+
+function renderActionPlan(analysis) {
+  const primary = primaryCoachingIssue(analysis);
+  const nextIssues = analysis.issues.filter((issue) => issue.id !== primary?.id && issue.status !== "positive").slice(0, 2);
+  const strengths = strengthLabels(analysis.bodyScores);
+  const modeCopy =
+    state.viewMode === "athlete"
+      ? "Keep this simple: one cue, one drill, one thing to feel on the next jump."
+      : "Use this as the first review pass, then confirm details frame by frame before changing the plan.";
+
+  return `
+    <div class="plan-heading">
+      <div>
+        <p class="eyebrow">Next session</p>
+        <h3>${state.viewMode === "athlete" ? "Your jump plan" : "Coach action plan"}</h3>
+      </div>
+      <span class="status-pill ${
+        primary?.priority === "high" ? "status-bad" : primary?.priority === "medium" ? "status-warn" : "status-good"
+      }">
+        ${escapeHtml(primary?.phase ?? "Overall")}
+      </span>
+    </div>
+    <p class="plan-copy">${escapeHtml(modeCopy)}</p>
+    <div class="plan-grid">
+      <article>
+        <i data-lucide="target"></i>
+        <span>Focus cue</span>
+        <strong>${escapeHtml(primary?.cue ?? "Use the overlay to compare the strongest and weakest frames.")}</strong>
+      </article>
+      <article>
+        <i data-lucide="dumbbell"></i>
+        <span>Drill</span>
+        <strong>${escapeHtml(primary?.drill ?? "Repeat the same camera angle and compare the next jump.")}</strong>
+      </article>
+      <article>
+        <i data-lucide="badge-check"></i>
+        <span>Strength</span>
+        <strong>${escapeHtml(strengths[0] ?? "Full-body tracking is ready for review.")}</strong>
+      </article>
+    </div>
+    ${
+      nextIssues.length
+        ? `<div class="mini-focus-row">${nextIssues
+            .map((issue) => `<span>${escapeHtml(issue.phase)}: ${escapeHtml(issue.title)}</span>`)
+            .join("")}</div>`
+        : ""
+    }
+  `;
+}
+
+function primaryCoachingIssue(analysis) {
+  return (
+    analysis.issues.find((issue) => issue.priority === "high" && issue.status !== "positive") ??
+    analysis.issues.find((issue) => issue.status === "needs-work") ??
+    analysis.issues.find((issue) => issue.status === "warning") ??
+    analysis.issues[0] ??
+    null
+  );
+}
+
+function strengthLabels(bodyScores = {}) {
+  const labels = [
+    ["Upper body", bodyScores.upperBody],
+    ["Lower body", bodyScores.lowerBody],
+    ["Core line", bodyScores.coreLine],
+    ["Vault timing", bodyScores.vaultTiming],
+    ["Plant takeoff", bodyScores.plantTakeoff],
+    ["Swing", bodyScores.swingRockback],
+    ["Extension", bodyScores.extensionTurn],
+  ];
+  return labels
+    .filter(([, value]) => Number.isFinite(value))
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, value]) => `${label} is at ${Math.round(value * 100)}%`);
+}
+
+function setReviewMode(mode) {
+  state.viewMode = mode === "athlete" ? "athlete" : "coach";
+  elements.appShell.dataset.mode = state.viewMode;
+  [elements.coachModeButton, elements.athleteModeButton].forEach((button) => {
+    const isActive = button.dataset.mode === state.viewMode;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+  renderSessionSnapshot();
+  if (state.analysis) {
+    elements.actionPlan.innerHTML = renderActionPlan(state.analysis);
+    window.lucide?.createIcons();
+  }
+}
+
 function drawCurrentOverlay() {
   drawOverlay({
     canvas: elements.overlayCanvas,
@@ -529,6 +706,7 @@ function updateLiveForm() {
   elements.liveStatusLabel.textContent = labelForStatus(form.status);
   elements.livePhaseLabel.textContent = form.phaseLabel ?? "Current frame";
   elements.liveScoreLabel.textContent = `${score}%`;
+  renderSessionSnapshot();
 }
 
 function loadVideoSource({ url, name, kind, file = null, objectUrl = false }) {
@@ -662,6 +840,19 @@ function statusColor(status) {
   if (status === "okay") return "#f2c94c";
   if (status === "bad") return "#ff5a5f";
   return "#8b9692";
+}
+
+function scoreTone(score) {
+  if (score >= 72) return "good";
+  if (score >= 52) return "okay";
+  return "bad";
+}
+
+function priorityTone(priority) {
+  if (priority === "high") return "bad";
+  if (priority === "medium") return "okay";
+  if (priority === "low") return "good";
+  return "neutral";
 }
 
 function defaultConfig() {

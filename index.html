@@ -13,8 +13,19 @@
         <div>
           <p class="eyebrow">Vault Vision</p>
           <h1>Pole vault form analysis</h1>
+          <p class="topbar-copy">Every jump gets a score, a color-coded overlay, and a focused plan.</p>
         </div>
         <div class="topbar-actions">
+          <div class="mode-toggle" role="group" aria-label="Review mode">
+            <button id="coachModeButton" class="mode-button is-active" type="button" data-mode="coach">
+              <i data-lucide="clipboard-check"></i>
+              <span>Coach</span>
+            </button>
+            <button id="athleteModeButton" class="mode-button" type="button" data-mode="athlete">
+              <i data-lucide="sparkles"></i>
+              <span>Athlete</span>
+            </button>
+          </div>
           <span id="cloudStatus" class="status-pill status-muted">Cloud not configured</span>
           <button id="refreshLibraryButton" class="icon-button" type="button" title="Refresh library" aria-label="Refresh library">
             <i data-lucide="refresh-cw"></i>
@@ -93,6 +104,8 @@
             </div>
           </div>
 
+          <div id="sessionSnapshot" class="session-snapshot" aria-live="polite"></div>
+
           <div class="video-stage" id="videoStage">
             <video id="vaultVideo" playsinline controls preload="metadata"></video>
             <canvas id="overlayCanvas"></canvas>
@@ -109,8 +122,15 @@
             <span id="liveScoreLabel">0%</span>
           </div>
 
+          <div class="quality-legend" aria-label="Form quality colors">
+            <span><i class="legend-dot legend-good"></i>Good</span>
+            <span><i class="legend-dot legend-okay"></i>Okay</span>
+            <span><i class="legend-dot legend-bad"></i>Needs work</span>
+          </div>
+
           <div class="timeline-wrap">
             <div id="phaseTimeline" class="phase-timeline"></div>
+            <div id="phaseLegend" class="phase-legend"></div>
             <div class="scrub-row">
               <input id="timeSlider" type="range" min="0" max="0" value="0" step="0.01" disabled />
               <output id="timeReadout">0.00s</output>
@@ -214,6 +234,7 @@
           </div>
 
           <div id="scoreSummary" class="score-summary hidden"></div>
+          <div id="actionPlan" class="action-plan hidden"></div>
           <div id="issuesList" class="issues-list">
             <p class="empty-copy">Analysis feedback will appear here.</p>
           </div>
