@@ -36,6 +36,8 @@ See `docs/godaddy-deploy.md`. V1 is designed to work well as static files on GoD
 
 V1 uses MediaPipe Pose Landmarker and transparent rules. It does not train a custom AI model. Camera angle, occlusion, video quality, and whether the pole or box are marked all affect confidence. The live stick figure uses green, yellow, and red to show good, okay, and needs-work form. Treat feedback as a coaching aid, not a safety guarantee.
 
+The active-vaulter tracker now links people across frames with motion continuity, bounding-box overlap, body-size consistency, and short-gap reacquisition. This helps the overlay stay on the moving vaulter instead of switching to a larger spectator when pose order changes.
+
 The current scoring pass includes a research-grounded phase report for approach, plant/takeoff, swing/rockback, extension/turn, and clearance. Each report calls out what looks good, what needs review, and what should be measured next.
 
 The dashboard now also has an Ochy-inspired vault report with four coachable sections: Analysis, Style, Metrics, and Drills. The style label is adapted for pole vault phases and remains confidence-gated when the video angle or tracking quality is weak.
