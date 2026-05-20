@@ -2,12 +2,42 @@
 
 This project is set up so Codex can work on Vault Vision from the local workspace and publish changes through GitHub.
 
-## Current Automation
+## Automation Team
 
 - Automation id: `autonomation-hourly-research-for-analysis`
 - Purpose: improve the uploaded-video analysis output with research-grounded pole vault feedback.
 - Scope: `src/analysis.js`, `src/pose-service.js`, `src/app.js` results rendering, tests, and analysis docs.
 - Expected output: a `codex/` branch and pull request, or a written status note if no code change is safe.
+
+- Automation id: `vault-vision-ui-polish-agent`
+- Purpose: improve the athlete/coach user interface, responsive layout, results scanability, and first-screen workflow.
+- Scope: `index.html`, `src/app.js`, `src/styles.css`, and verification docs.
+- Schedule: weekly on Monday morning.
+
+- Automation id: `vault-vision-coach-workflow-agent`
+- Purpose: improve coach review workflows around calibration, local/cloud saves, library loading, export, and report handoff.
+- Scope: `src/app.js`, `src/local-library.js`, `src/supabase-service.js` when needed, UI files, and behavior tests.
+- Schedule: weekly on Tuesday morning.
+
+- Automation id: `vault-vision-browser-qa-agent`
+- Purpose: run local/live browser QA and catch workflow, layout, cache, and visible regression issues.
+- Scope: verification docs and small verified UI fixes.
+- Schedule: weekly on Wednesday morning.
+
+- Automation id: `vault-vision-deployment-agent`
+- Purpose: keep GitHub Pages, GoDaddy, CI, caching, and deployment documentation accurate.
+- Scope: README, deployment docs, verification docs, workflows, and cache/version references.
+- Schedule: weekly on Thursday morning.
+
+- Automation id: `vault-vision-product-manager-agent`
+- Purpose: keep issues, handoffs, and project priorities organized for future Codex work.
+- Scope: GitHub issues/PRs and process docs.
+- Schedule: weekly on Friday morning.
+
+- Automation id: `update-agents-md`
+- Purpose: keep `AGENTS.md` current with newly discovered workflows and commands.
+- Scope: `AGENTS.md`.
+- Schedule: hourly.
 
 ## Required Workflow
 

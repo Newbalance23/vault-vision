@@ -58,6 +58,7 @@ npm run check
 ## Codex Automation Contract
 
 - Use `docs/codex-automation.md` for recurring Codex research work.
+- The active automation team covers analysis research, UI polish, coach workflow, browser QA, deployment readiness, product management, and AGENTS.md maintenance.
 - Each automated research pass should either open a `codex/` pull request or leave a clear written status note explaining why no change was made.
 - Before publishing, run `npm run check`.
 - In Codex on this machine, run `powershell -ExecutionPolicy Bypass -File tools/codex_check.ps1`.
