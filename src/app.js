@@ -1,8 +1,8 @@
-import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-20-research-analysis";
-import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js?v=2026-05-20-research-analysis";
-import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-20-research-analysis";
-import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-20-research-analysis";
-import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-20-research-analysis";
+import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-20-ochy-report";
+import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js?v=2026-05-20-ochy-report";
+import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-20-ochy-report";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-20-ochy-report";
+import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-20-ochy-report";
 
 const elements = {
   appShell: document.querySelector(".app-shell"),
@@ -51,6 +51,7 @@ const elements = {
   progressText: document.querySelector("#progressText"),
   confidenceBadge: document.querySelector("#confidenceBadge"),
   scoreSummary: document.querySelector("#scoreSummary"),
+  vaultReport: document.querySelector("#vaultReport"),
   actionPlan: document.querySelector("#actionPlan"),
   technicalBreakdown: document.querySelector("#technicalBreakdown"),
   issuesList: document.querySelector("#issuesList"),
@@ -457,6 +458,8 @@ function renderResults() {
     elements.confidenceBadge.className = "status-pill status-muted";
     elements.scoreSummary.classList.add("hidden");
     elements.scoreSummary.innerHTML = "";
+    elements.vaultReport.classList.add("hidden");
+    elements.vaultReport.innerHTML = "";
     elements.actionPlan.classList.add("hidden");
     elements.actionPlan.innerHTML = "";
     elements.technicalBreakdown.classList.add("hidden");
@@ -492,6 +495,8 @@ function renderResults() {
 
   elements.scoreSummary.classList.remove("hidden");
   elements.scoreSummary.innerHTML = renderScoreSummary(analysis);
+  elements.vaultReport.classList.remove("hidden");
+  elements.vaultReport.innerHTML = renderVaultReport(analysis);
   elements.actionPlan.classList.remove("hidden");
   elements.actionPlan.innerHTML = renderActionPlan(analysis);
   elements.technicalBreakdown.classList.remove("hidden");
@@ -633,6 +638,135 @@ function renderScoreSummary(analysis) {
   `;
 }
 
+function renderVaultReport(analysis) {
+  const report = analysis.vaultReport ?? {};
+  const analysisBlock = report.analysis ?? {
+    score: analysis.overallScore ?? 0,
+    status: scoreTone(analysis.overallScore ?? 0),
+    primaryFocus: primaryCoachingIssue(analysis)?.title ?? "Frame-by-frame vault review",
+    summary: primaryCoachingIssue(analysis)?.cue ?? "Review the strongest and weakest frames before changing the plan.",
+    confidence: analysis.confidence?.overall ?? 0,
+    strengths: strengthLabels(analysis.bodyScores).slice(0, 3).map((label) => ({ label, display: "", status: "okay" })),
+  };
+  const style = report.style ?? analysis.vaultStyle ?? {};
+  const styleConfidence = Math.round(((style.styleConfidence ?? analysisBlock.confidence ?? 0) || 0) * 100);
+  const sections = report.sections?.length
+    ? report.sections
+    : [
+        { id: "analysis", label: "Analysis" },
+        { id: "style", label: "Style" },
+        { id: "metrics", label: "Metrics" },
+        { id: "drills", label: "Drills" },
+      ];
+  const metrics = report.metrics?.length ? report.metrics : fallbackReportMetrics(analysis);
+  const drills = report.drills?.length ? report.drills : fallbackReportDrills(analysis);
+  const bestPhase = style.bestPhase?.label ? `${style.bestPhase.label} ${formatRatio(style.bestPhase.score)}` : "Keep reviewing";
+  const workPhase = style.workPhase?.label ? `${style.workPhase.label} ${formatRatio(style.workPhase.score)}` : "Build a baseline";
+
+  return `
+    <div class="report-heading">
+      <div>
+        <p class="eyebrow">Vault report</p>
+        <h3>Analysis, style, metrics, drills</h3>
+      </div>
+      <span class="status-pill ${styleConfidence >= 72 ? "status-good" : styleConfidence >= 48 ? "status-warn" : "status-bad"}">
+        Style confidence ${styleConfidence}%
+      </span>
+    </div>
+    <div class="report-tabs">
+      ${sections.map((section) => `<span>${escapeHtml(section.label)}</span>`).join("")}
+    </div>
+    <div class="report-grid">
+      <article class="report-card tone-${escapeHtml(analysisBlock.status ?? scoreTone(analysisBlock.score ?? 0))}">
+        <div class="report-card-head">
+          <i data-lucide="radar"></i>
+          <span>Analysis</span>
+          <strong>${escapeHtml(String(analysisBlock.score ?? analysis.overallScore ?? 0))}</strong>
+        </div>
+        <h4>${escapeHtml(analysisBlock.primaryFocus ?? "Frame review")}</h4>
+        <p>${escapeHtml(analysisBlock.summary ?? "Use the phase timeline and overlay to confirm the jump shape.")}</p>
+        ${renderReportStrengths(analysisBlock.strengths)}
+      </article>
+
+      <article class="report-card tone-${escapeHtml(style.status ?? "okay")}">
+        <div class="report-card-head">
+          <i data-lucide="activity"></i>
+          <span>Style</span>
+          <strong>${escapeHtml(formatRatio(style.score))}</strong>
+        </div>
+        <h4>${escapeHtml(style.label ?? "Vault Style")}</h4>
+        <p>${escapeHtml(style.summary ?? "The app is building a style picture from the available phase scores.")}</p>
+        <div class="style-split">
+          <span><strong>Best</strong>${escapeHtml(bestPhase)}</span>
+          <span><strong>Work</strong>${escapeHtml(workPhase)}</span>
+        </div>
+        ${style.cues?.length ? `<div class="report-cues">${style.cues.slice(0, 2).map((cue) => `<p>${escapeHtml(cue)}</p>`).join("")}</div>` : ""}
+      </article>
+
+      <article class="report-card report-card-wide">
+        <div class="report-card-head">
+          <i data-lucide="line-chart"></i>
+          <span>Metrics</span>
+          <strong>${metrics.length}</strong>
+        </div>
+        <div class="report-metric-grid">
+          ${metrics.slice(0, 8).map(renderReportMetric).join("")}
+        </div>
+      </article>
+
+      <article class="report-card report-card-wide">
+        <div class="report-card-head">
+          <i data-lucide="dumbbell"></i>
+          <span>Drills</span>
+          <strong>${drills.length}</strong>
+        </div>
+        <div class="report-drill-list">
+          ${drills.slice(0, 3).map(renderReportDrill).join("")}
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function renderReportStrengths(strengths = []) {
+  const rows = strengths.filter(Boolean).slice(0, 3);
+  if (!rows.length) return "";
+  return `
+    <div class="report-strengths">
+      ${rows
+        .map(
+          (item) => `
+            <span class="report-mini tone-${escapeHtml(item.status ?? "okay")}">
+              <strong>${escapeHtml(item.display || item.label)}</strong>
+              ${escapeHtml(item.display ? item.label : "")}
+            </span>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderReportMetric(metric) {
+  return `
+    <span class="report-metric tone-${escapeHtml(metric.status ?? "bad")}">
+      <small>${escapeHtml(metric.phase || "Metric")}</small>
+      <strong>${escapeHtml(metric.display ?? "N/A")}</strong>
+      ${escapeHtml(metric.label)}
+    </span>
+  `;
+}
+
+function renderReportDrill(drill) {
+  return `
+    <div class="report-drill tone-${escapeHtml(drill.status ?? priorityTone(drill.priority))}">
+      <span>${escapeHtml(drill.phase ?? "Overall")}</span>
+      <strong>${escapeHtml(drill.title ?? "Review this phase")}</strong>
+      <p>${escapeHtml(drill.drill ?? drill.cue ?? "Repeat the same camera angle and compare the next jump.")}</p>
+    </div>
+  `;
+}
+
 function renderSessionSnapshot() {
   const analysis = state.analysis;
   if (analysis) {
@@ -760,6 +894,42 @@ function primaryCoachingIssue(analysis) {
   );
 }
 
+function fallbackReportMetrics(analysis) {
+  const metrics = analysis.metrics ?? {};
+  const rows = [
+    ["Approach rhythm", metrics.approachRhythm, "Approach"],
+    ["Plant arms", metrics.plantArmExtension, "Plant"],
+    ["Drive knee", metrics.takeoffKneeDrive, "Takeoff"],
+    ["Trail leg", metrics.trailLegStraightness, "Swing"],
+    ["Hip rise", metrics.hipRise, "Extension"],
+    ["Clearance line", metrics.clearanceLine, "Clearance"],
+  ];
+  return rows
+    .map(([label, value, phase]) => ({
+      label,
+      phase,
+      score: value,
+      display: percent(value),
+      status: ratioTone(value),
+    }))
+    .filter((row) => row.display);
+}
+
+function fallbackReportDrills(analysis) {
+  const primary = primaryCoachingIssue(analysis);
+  if (!primary) return [];
+  return [
+    {
+      title: primary.title,
+      phase: primary.phase,
+      cue: primary.cue,
+      drill: primary.drill,
+      priority: primary.priority,
+      status: priorityTone(primary.priority),
+    },
+  ];
+}
+
 function strengthLabels(bodyScores = {}) {
   const labels = [
     ["Upper body", bodyScores.upperBody],
@@ -774,6 +944,17 @@ function strengthLabels(bodyScores = {}) {
     .filter(([, value]) => Number.isFinite(value))
     .sort((a, b) => b[1] - a[1])
     .map(([label, value]) => `${label} is at ${Math.round(value * 100)}%`);
+}
+
+function ratioTone(value) {
+  if (!Number.isFinite(value)) return "bad";
+  return scoreTone(value * 100);
+}
+
+function formatRatio(value) {
+  if (!Number.isFinite(value)) return "--";
+  if (value <= 1) return `${Math.round(value * 100)}%`;
+  return String(Math.round(value));
 }
 
 function setReviewMode(mode) {

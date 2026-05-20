@@ -1,4 +1,4 @@
-import { analyzeVault, annotateFrameScores } from "./analysis.js?v=2026-05-20-research-analysis";
+import { analyzeVault, annotateFrameScores } from "./analysis.js?v=2026-05-20-ochy-report";
 
 const TASKS_VERSION = "latest";
 const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;

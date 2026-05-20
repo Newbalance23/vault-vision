@@ -28,6 +28,49 @@ const CAMERA_RELIABILITY = Object.freeze({
   rear: 0.58,
 });
 
+const VAULT_STYLE_DEFINITIONS = Object.freeze([
+  {
+    id: "speed-builder",
+    label: "Speed Builder",
+    phaseKey: "approach",
+    phaseLabel: "Approach",
+    summary: "Your strongest signal is the runway build: rhythm, posture, and pole carry into the plant.",
+    cue: "Keep the last three strides tall and quick so the pole drop arrives on time.",
+  },
+  {
+    id: "tall-plant",
+    label: "Tall Plant",
+    phaseKey: "plant-takeoff",
+    phaseLabel: "Plant / takeoff",
+    summary: "Your strongest signal is a high plant shape with the body prepared to leave the runway.",
+    cue: "Finish the plant tall before the takeoff foot leaves the ground.",
+  },
+  {
+    id: "long-swinger",
+    label: "Long Swinger",
+    phaseKey: "swing-rockback",
+    phaseLabel: "Swing / rockback",
+    summary: "Your strongest signal is the trail leg and swing path into rockback.",
+    cue: "Let the long swing finish before pulling with the shoulders.",
+  },
+  {
+    id: "inverter",
+    label: "Inverter",
+    phaseKey: "extension-turn",
+    phaseLabel: "Extension / turn",
+    summary: "Your strongest signal is hip rise, extension, and shoulder-hip organization near the top.",
+    cue: "Stay long through extension, then turn after the hips rise.",
+  },
+  {
+    id: "bar-finisher",
+    label: "Bar Finisher",
+    phaseKey: "clearance-landing",
+    phaseLabel: "Clearance / landing",
+    summary: "Your strongest signal is the body line around bar clearance.",
+    cue: "Keep shoulders, hips, and feet connected through the finish.",
+  },
+]);
+
 export function analyzeVault({ frames = [], videoMeta = {}, calibration = {}, cameraAngle = "auto" } = {}) {
   const poseFrames = frames.map((frame) => ({
       time: frame.time,
@@ -51,6 +94,18 @@ export function analyzeVault({ frames = [], videoMeta = {}, calibration = {}, ca
   const frameScores = annotateFrameScores(poseFrames, phaseRanges, cameraAngle);
   const bodyScores = calculateBodyScores(frameScores, metrics);
   const coachingBreakdown = buildCoachingBreakdown(metrics, bodyScores, phaseRanges, confidence, cameraAngle, calibration);
+  const overallScore = calculateOverallScore(bodyScores, confidence);
+  const vaultStyle = buildVaultStyle(metrics, bodyScores, confidence);
+  const vaultReport = buildVaultReport({
+    metrics,
+    bodyScores,
+    issues,
+    coachingBreakdown,
+    confidence,
+    overallScore,
+    vaultStyle,
+    cameraAngle,
+  });
 
   return {
     schemaVersion: "vault-vision.analysis.v1",
@@ -68,9 +123,11 @@ export function analyzeVault({ frames = [], videoMeta = {}, calibration = {}, ca
     phaseRanges,
     metrics,
     bodyScores,
-    overallScore: calculateOverallScore(bodyScores, confidence),
+    overallScore,
     issues,
     coachingBreakdown,
+    vaultStyle,
+    vaultReport,
     researchBasis: [
       {
         title: "World Athletics pole vault technique guide",
@@ -1032,6 +1089,285 @@ function breakdownItem({ id, phase, score, focus, good, watch, measureNext, conf
     measureNext,
     confidence: round(confidence ?? 0, 2),
   };
+}
+
+function buildVaultStyle(metrics = {}, bodyScores = {}, confidence = {}) {
+  const candidates = VAULT_STYLE_DEFINITIONS.map((definition) => styleCandidate(definition, metrics, bodyScores)).filter(Boolean);
+  const ranked = candidates.sort((a, b) => b.score - a.score);
+  const strongest = ranked[0];
+  const weakest = ranked.at(-1);
+  const styleConfidence = confidence.overall ?? 0;
+  const confidenceNote =
+    styleConfidence >= 0.72
+      ? "Style call is based on a strong body track."
+      : styleConfidence >= 0.48
+        ? "Style call is useful, but confirm it frame by frame."
+        : "Style call is tentative because the clip has limited tracking confidence.";
+
+  if (!strongest) {
+    return {
+      id: "development-jump",
+      label: "Development Jump",
+      phaseKey: "overall",
+      phaseLabel: "Overall",
+      score: 0,
+      status: "bad",
+      bestPhase: null,
+      workPhase: null,
+      summary: "The app needs more reliable landmarks before it can name a clear vault style.",
+      cues: ["Use a steady full-body side view and keep the vaulter visible from the run through landing."],
+      metrics: [],
+      styleConfidence: round(styleConfidence, 2),
+      confidenceNote,
+    };
+  }
+
+  const bestPhase = {
+    key: strongest.phaseKey,
+    label: strongest.phaseLabel,
+    score: round(strongest.score, 2),
+    status: statusForScore(strongest.score),
+  };
+  const workPhase = weakest
+    ? {
+        key: weakest.phaseKey,
+        label: weakest.phaseLabel,
+        score: round(weakest.score, 2),
+        status: statusForScore(weakest.score),
+      }
+    : null;
+
+  if (styleConfidence < 0.46) {
+    return {
+      id: "needs-clearer-video",
+      label: "Needs Clearer Video",
+      phaseKey: strongest.phaseKey,
+      phaseLabel: strongest.phaseLabel,
+      score: round(strongest.score, 2),
+      status: "bad",
+      bestPhase,
+      workPhase,
+      summary: "The app can see some vault shapes, but not enough to call a style cleanly.",
+      cues: [
+        "Use the current overlay as a frame-review guide only.",
+        "Film the full body from a steady side or slight-oblique angle for the next analysis.",
+      ],
+      metrics: strongest.metrics,
+      styleConfidence: round(styleConfidence, 2),
+      confidenceNote,
+    };
+  }
+
+  return {
+    id: strongest.id,
+    label: strongest.label,
+    phaseKey: strongest.phaseKey,
+    phaseLabel: strongest.phaseLabel,
+    score: round(strongest.score, 2),
+    status: statusForScore(strongest.score),
+    bestPhase,
+    workPhase,
+    summary: strongest.summary,
+    cues: [
+      strongest.cue,
+      weakest && weakest.id !== strongest.id ? `Next limiter: ${weakest.phaseLabel} at ${percentText(weakest.score)}.` : null,
+    ].filter(Boolean),
+    metrics: strongest.metrics,
+    styleConfidence: round(styleConfidence, 2),
+    confidenceNote,
+  };
+}
+
+function styleCandidate(definition, metrics, bodyScores) {
+  const metricRows = styleMetricRows(definition.phaseKey, metrics, bodyScores);
+  const score = averageFinite(metricRows.map((row) => row.score));
+  if (!Number.isFinite(score)) return null;
+  return {
+    ...definition,
+    score,
+    metrics: metricRows.filter((row) => Number.isFinite(row.score)).slice(0, 4),
+  };
+}
+
+function styleMetricRows(phaseKey, metrics, bodyScores) {
+  if (phaseKey === "approach") {
+    return [
+      reportMetric("Phase score", bodyScores.approach),
+      reportMetric("Rhythm", metrics.approachRhythm),
+      reportMetric("Speed build", metrics.approachAcceleration),
+      reportMetric("Pole carry", metrics.poleCarryControl),
+    ];
+  }
+  if (phaseKey === "plant-takeoff") {
+    return [
+      reportMetric("Phase score", bodyScores.plantTakeoff),
+      reportMetric("Plant arms", metrics.plantArmExtension),
+      reportMetric("Hand height", metrics.plantHandPosition),
+      reportMetric("Drive knee", metrics.takeoffKneeDrive),
+      reportMetric("Takeoff angle", metrics.takeoffAngleQuality),
+    ];
+  }
+  if (phaseKey === "swing-rockback") {
+    return [
+      reportMetric("Phase score", bodyScores.swingRockback),
+      reportMetric("Trail leg", metrics.trailLegStraightness),
+      reportMetric("Inversion entry", metrics.inversionQuality),
+    ];
+  }
+  if (phaseKey === "extension-turn") {
+    return [
+      reportMetric("Phase score", bodyScores.extensionTurn),
+      reportMetric("Hip rise", metrics.hipRise),
+      reportMetric("Shoulder/hip line", metrics.shoulderHipAlignment),
+      reportMetric("Turn timing", metrics.turnTiming),
+    ];
+  }
+  return [
+    reportMetric("Phase score", bodyScores.clearanceLanding),
+    reportMetric("Clearance line", metrics.clearanceLine),
+  ];
+}
+
+function buildVaultReport({
+  metrics = {},
+  bodyScores = {},
+  issues = [],
+  coachingBreakdown = [],
+  confidence = {},
+  overallScore = 0,
+  vaultStyle = null,
+  cameraAngle = "auto",
+} = {}) {
+  const primary = primaryReportIssue(issues);
+  const drillRows = reportDrills(issues);
+
+  return {
+    pattern: "analysis-style-metrics-drills",
+    sections: [
+      { id: "analysis", label: "Analysis" },
+      { id: "style", label: "Style" },
+      { id: "metrics", label: "Metrics" },
+      { id: "drills", label: "Drills" },
+    ],
+    analysis: {
+      score: overallScore,
+      status: statusForScore((overallScore ?? 0) / 100),
+      primaryFocus: primary?.title ?? "Frame-by-frame vault review",
+      summary: primary?.cue ?? "No major automatic red flags crossed the current scoring thresholds.",
+      confidence: round(confidence.overall ?? 0, 2),
+      cameraAngle,
+      strengths: reportStrengths(bodyScores, coachingBreakdown).slice(0, 3),
+    },
+    style: vaultStyle,
+    metrics: reportMetrics(metrics, bodyScores),
+    drills: drillRows.length ? drillRows : reportFallbackDrills(primary),
+  };
+}
+
+function primaryReportIssue(issues = []) {
+  return (
+    issues.find((issue) => issue.priority === "high" && issue.status !== "positive") ??
+    issues.find((issue) => issue.status === "needs-work") ??
+    issues.find((issue) => issue.status === "warning") ??
+    issues[0] ??
+    null
+  );
+}
+
+function reportStrengths(bodyScores = {}, coachingBreakdown = []) {
+  const phaseStrengths = coachingBreakdown
+    .filter((item) => Number.isFinite(item.score))
+    .map((item) => ({
+      label: item.phase,
+      detail: item.focus,
+      score: item.score,
+      status: statusForScore(item.score),
+      display: percentText(item.score),
+    }));
+  const bodyStrengths = [
+    ["Upper body", bodyScores.upperBody],
+    ["Lower body", bodyScores.lowerBody],
+    ["Core line", bodyScores.coreLine],
+    ["Vault timing", bodyScores.vaultTiming],
+  ]
+    .filter(([, value]) => Number.isFinite(value))
+    .map(([label, value]) => ({
+      label,
+      detail: `${label} score`,
+      score: value,
+      status: statusForScore(value),
+      display: percentText(value),
+    }));
+
+  return [...phaseStrengths, ...bodyStrengths].sort((a, b) => b.score - a.score);
+}
+
+function reportMetrics(metrics = {}, bodyScores = {}) {
+  return [
+    reportMetric("Approach rhythm", metrics.approachRhythm, "Approach"),
+    reportMetric("Speed build", metrics.approachAcceleration, "Approach"),
+    reportMetric("Plant arms", metrics.plantArmExtension, "Plant"),
+    reportMetric("Hand height", metrics.plantHandPosition, "Plant"),
+    reportMetric("Drive knee", metrics.takeoffKneeDrive, "Takeoff"),
+    reportMetric(
+      "Takeoff angle",
+      metrics.takeoffAngleQuality,
+      "Takeoff",
+      Number.isFinite(metrics.takeoffAngleDegrees) ? `${metrics.takeoffAngleDegrees} deg` : null,
+    ),
+    reportMetric("Trail leg", metrics.trailLegStraightness, "Swing"),
+    reportMetric("Inversion", metrics.inversionQuality, "Rockback"),
+    reportMetric("Hip rise", metrics.hipRise, "Extension"),
+    reportMetric("Turn timing", metrics.turnTiming, "Turn"),
+    reportMetric("Clearance line", metrics.clearanceLine, "Clearance"),
+    reportMetric("Overall timing", bodyScores.vaultTiming, "Overall"),
+  ].filter((row) => row.display);
+}
+
+function reportMetric(label, score, phase = "", display = null) {
+  return {
+    label,
+    phase,
+    score: round(score, 2),
+    display: display ?? percentText(score),
+    status: Number.isFinite(score) ? statusForScore(score) : "bad",
+  };
+}
+
+function reportDrills(issues = []) {
+  return issues
+    .filter((issue) => issue.status !== "positive" && issue.id !== "confidence-warning")
+    .slice(0, 4)
+    .map((issue) => ({
+      title: issue.title,
+      phase: issue.phase,
+      cue: issue.cue,
+      drill: issue.drill,
+      priority: issue.priority,
+      status: priorityStatus(issue.priority),
+      confidence: issue.confidence,
+    }));
+}
+
+function reportFallbackDrills(primary) {
+  if (!primary) return [];
+  return [
+    {
+      title: primary.title,
+      phase: primary.phase,
+      cue: primary.cue,
+      drill: primary.drill,
+      priority: primary.priority,
+      status: priorityStatus(primary.priority),
+      confidence: primary.confidence,
+    },
+  ];
+}
+
+function priorityStatus(priority) {
+  if (priority === "high") return "bad";
+  if (priority === "medium") return "okay";
+  return "good";
 }
 
 function average(values) {

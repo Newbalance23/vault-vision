@@ -38,6 +38,8 @@ V1 uses MediaPipe Pose Landmarker and transparent rules. It does not train a cus
 
 The current scoring pass includes a research-grounded phase report for approach, plant/takeoff, swing/rockback, extension/turn, and clearance. Each report calls out what looks good, what needs review, and what should be measured next.
 
+The dashboard now also has an Ochy-inspired vault report with four coachable sections: Analysis, Style, Metrics, and Drills. The style label is adapted for pole vault phases and remains confidence-gated when the video angle or tracking quality is weak.
+
 ## Tests
 
 ```powershell
