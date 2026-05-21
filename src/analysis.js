@@ -29,7 +29,7 @@ const CAMERA_RELIABILITY = Object.freeze({
   rear: 0.58,
 });
 
-const TRACK_MAX_GAP = 24;
+const TRACK_MAX_GAP = 12;
 const TRACK_MIN_CORE_CONFIDENCE = 0.2;
 const TRACK_MIN_FILL_CONFIDENCE = 0.18;
 const TRACK_POSE_MATCH_LANDMARKS = Object.freeze([
@@ -255,11 +255,15 @@ export function assignActivePoseTrack(poseFrames = []) {
       if (pose) pose.trackId = track.id;
     });
   });
+  const activeStartFrame = poseFrames.some((frame) => frame.poses.length > 1)
+    ? vaultFocusStartFrame(bestTrack, poseFrames.length)
+    : 0;
   bestTrack.observations.forEach((observation) => {
+    if (observation.frameIndex < activeStartFrame) return;
     poseFrames[observation.frameIndex].activePoseIndex = observation.poseIndex;
   });
 
-  fillTrackGaps(poseFrames, bestTrack);
+  fillTrackGaps(poseFrames, bestTrack, activeStartFrame);
   return poseFrames;
 }
 
@@ -740,12 +744,12 @@ function trackMatch(track, observation, frameIndex) {
   const predictedCenter = predictTrackCenter(track, frameIndex);
   const centerDistance = distance2d(observation.center, predictedCenter);
   const speed = distance2d({ x: 0, y: 0 }, track.velocity ?? { x: 0, y: 0 });
-  const maxDistance = clamp(0.12 + gap * 0.02 + speed * gap * 0.65, 0.14, gap > 12 ? 0.52 : 0.42);
+  const maxDistance = clamp(0.11 + gap * 0.016 + speed * gap * 0.34, 0.13, gap > 6 ? 0.28 : 0.22);
   const overlap = boxIou(observation.box, last.box);
   const sizeDelta = boxScaleDelta(observation.box, last.box);
   const poseDelta = trackPoseDelta(track, observation);
 
-  if (centerDistance > maxDistance && overlap < 0.04 && poseDelta > 0.72) return null;
+  if (centerDistance > maxDistance && overlap < 0.04) return null;
   if (sizeDelta > 1.45 && overlap < 0.08 && poseDelta > 0.64) return null;
 
   return {
@@ -830,9 +834,9 @@ function activeTrackScore(track, totalFrames) {
   const span = Math.max(1, lastFrame - firstFrame + 1);
   const spanCoverage = span / Math.max(1, totalFrames);
   const continuity = observations.length / span;
-  const path = observations.slice(1).reduce((sum, observation, index) => {
-    return sum + distance2d(observation.center, observations[index].center);
-  }, 0);
+  const stepDistances = observations.slice(1).map((observation, index) => distance2d(observation.center, observations[index].center));
+  const path = stepDistances.reduce((sum, value) => sum + value, 0);
+  const maxStep = Math.max(0, ...stepDistances);
   const first = observations[0].center;
   const last = observations.at(-1).center;
   const displacement = distance2d(first, last);
@@ -848,12 +852,17 @@ function activeTrackScore(track, totalFrames) {
   const earlyPresence = 1 - Math.min(1, firstFrame / Math.max(1, totalFrames * 0.45));
   const finishPresence = Math.min(1, lastFrame / Math.max(1, totalFrames * 0.65));
   const stationaryPenalty = path < 0.08 && horizontalTravel < 0.05 ? 0.2 : 1;
+  const averageStep = path / Math.max(1, stepDistances.length);
+  const jumpPenalty = maxStep > 0.24 ? 0.18 : maxStep > 0.16 ? 0.45 : maxStep > 0.1 ? 0.72 : 1;
+  const pathShapePenalty = path > displacement * 6 + 1.1 && averageStep > 0.045 ? 0.42 : 1;
+  const runwayProgressBonus = horizontalTravel > 0.24 && verticalLift > 0.12 ? 0.35 : horizontalTravel > 0.16 ? 0.16 : 0;
   return (
     (path * 2.2 +
       displacement * 1.6 +
       horizontalTravel * 1.35 +
       verticalTravel * 1.3 +
       verticalLift * 1.15 +
+      runwayProgressBonus +
       coverage * 0.42 +
       spanCoverage * 0.52 +
       continuity * 0.34 +
@@ -861,14 +870,39 @@ function activeTrackScore(track, totalFrames) {
       earlyPresence * 0.08 +
       finishPresence * 0.12 +
       meanArea * 0.03) *
-    stationaryPenalty
+    stationaryPenalty *
+    jumpPenalty *
+    pathShapePenalty
   );
 }
 
-function fillTrackGaps(poseFrames, track) {
+function vaultFocusStartFrame(track, totalFrames) {
+  const observations = track.observations;
+  if (observations.length < 36 || totalFrames < 60) return 0;
+  const xValues = observations.map((observation) => observation.center.x);
+  const yValues = observations.map((observation) => observation.center.y);
+  const horizontalTravel = Math.max(...xValues) - Math.min(...xValues);
+  const verticalLift = observations[0].center.y - Math.min(...yValues);
+  if (horizontalTravel < 0.32 || verticalLift < 0.18) return 0;
+
+  const earliest = Math.floor(totalFrames * 0.18);
+  const focus = observations.find((observation) => {
+    const centerPoint = observation.center;
+    return (
+      observation.frameIndex >= earliest &&
+      centerPoint.x > 0.24 &&
+      centerPoint.x < 0.92 &&
+      centerPoint.y < 0.58
+    );
+  });
+  return focus?.frameIndex ?? 0;
+}
+
+function fillTrackGaps(poseFrames, track, minFrameIndex = 0) {
   const observationsByFrame = new Map(track.observations.map((observation) => [observation.frameIndex, observation]));
   const observations = [...track.observations].sort((a, b) => a.frameIndex - b.frameIndex);
   poseFrames.forEach((frame, frameIndex) => {
+    if (frameIndex < minFrameIndex) return;
     const observation = observationsByFrame.get(frameIndex);
     if (observation) {
       return;

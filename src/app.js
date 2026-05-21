@@ -1,8 +1,8 @@
-import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-21-tracking";
-import { canvasPointToVideoPoint, drawOverlay } from "./renderer.js?v=2026-05-21-tracking";
-import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-21-tracking";
-import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-21-tracking";
-import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-21-tracking";
+import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-21-ai-tracking";
+import { canvasPointToVideoPoint, drawOverlay } from "./renderer.js?v=2026-05-21-ai-tracking";
+import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-21-ai-tracking";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-21-ai-tracking";
+import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-21-ai-tracking";
 
 const elements = {
   appShell: document.querySelector(".app-shell"),
