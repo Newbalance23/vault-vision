@@ -60,7 +60,7 @@ export function drawOverlay({ canvas, video, analysis, calibration = {}, current
 
   frame.poses.forEach((pose, poseIndex) => {
     const isActive = poseIndex === frame.activePoseIndex;
-    drawPose(context, pose.landmarks, videoRect, isActive, isActive ? frame.form : null, poseIndex);
+    drawPose(context, pose.landmarks, videoRect, isActive, isActive ? frame.form : null, pose.trackId ?? poseIndex);
   });
 
   drawPhaseLabel(context, analysis, currentTime, videoRect);
@@ -207,6 +207,10 @@ function poseFrameAtTime(frames, currentTime) {
   const next = frames[nextIndex];
   const span = Math.max(0.001, next.time - previous.time);
   const amount = (currentTime - previous.time) / span;
+  if (framesHaveTrackIds(previous, next)) {
+    return interpolateTrackedFrame(previous, next, currentTime, amount);
+  }
+
   if (previous.activePoseIndex !== next.activePoseIndex || previous.poses.length !== next.poses.length) {
     return amount < 0.5 ? previous : next;
   }
@@ -216,10 +220,69 @@ function poseFrameAtTime(frames, currentTime) {
     activePoseIndex: previous.activePoseIndex,
     form: interpolateForm(previous.form, next.form, amount),
     poses: previous.poses.map((pose, poseIndex) => ({
+      trackId: pose.trackId,
       landmarks: interpolateLandmarks(pose.landmarks, next.poses[poseIndex]?.landmarks, amount),
       worldLandmarks: interpolateLandmarks(pose.worldLandmarks, next.poses[poseIndex]?.worldLandmarks, amount),
     })),
   };
+}
+
+function framesHaveTrackIds(previous, next) {
+  return previous.poses?.some((pose) => Number.isFinite(pose.trackId)) && next.poses?.some((pose) => Number.isFinite(pose.trackId));
+}
+
+function interpolateTrackedFrame(previous, next, currentTime, amount) {
+  const nextByTrack = new Map(next.poses.map((pose, index) => [trackKey(pose, index), { pose, index }]));
+  const previousActive = previous.poses?.[previous.activePoseIndex];
+  const nextActive = next.poses?.[next.activePoseIndex];
+  const previousActiveKey = Number.isFinite(previousActive?.trackId) ? previousActive.trackId : null;
+  const nextActiveKey = Number.isFinite(nextActive?.trackId) ? nextActive.trackId : null;
+  const activeKey = previousActiveKey ?? nextActiveKey;
+  const canBlendActiveForm = previousActiveKey !== null && previousActiveKey === nextActiveKey;
+  const poses = [];
+  const usedNextKeys = new Set();
+  let activePoseIndex = -1;
+
+  previous.poses.forEach((pose, poseIndex) => {
+    const key = trackKey(pose, poseIndex);
+    const nextMatch = nextByTrack.get(key);
+    usedNextKeys.add(key);
+    const nextPose = nextMatch?.pose;
+    const interpolated = nextPose
+      ? {
+          trackId: pose.trackId,
+          landmarks: interpolateLandmarks(pose.landmarks, nextPose.landmarks, amount),
+          worldLandmarks: interpolateLandmarks(pose.worldLandmarks, nextPose.worldLandmarks, amount),
+        }
+      : { ...pose };
+    if (key === activeKey) activePoseIndex = poses.length;
+    poses.push(interpolated);
+  });
+
+  next.poses.forEach((pose, poseIndex) => {
+    const key = trackKey(pose, poseIndex);
+    if (usedNextKeys.has(key) || amount < 0.5) return;
+    if (key === activeKey) activePoseIndex = poses.length;
+    poses.push({ ...pose });
+  });
+
+  return {
+    time: currentTime,
+    activePoseIndex,
+    form:
+      activePoseIndex === -1
+        ? previous.form ?? next.form
+        : canBlendActiveForm
+          ? interpolateForm(previous.form, next.form, amount)
+          : amount < 0.5
+            ? previous.form ?? next.form
+            : next.form ?? previous.form,
+    poses,
+  };
+}
+
+function trackKey(pose, fallbackIndex) {
+  return Number.isFinite(pose?.trackId) ? pose.trackId : `pose-${fallbackIndex}`;
 }
 
 function interpolateLandmarks(a = [], b = [], amount) {

@@ -138,6 +138,41 @@ assert.ok(
   swappingFrames.slice(17).filter((frame) => frame.activePoseIndex === 0).length >= 14,
   "tracker should reacquire the same vaulter after occlusion and pose index swaps",
 );
+assert.ok(
+  swappingFrames.every((frame) => frame.poses.every((pose) => Number.isFinite(pose.trackId))),
+  "all detected people should receive stable track ids when visible",
+);
+
+const crossingFrames = Array.from({ length: 28 }, (_, index) => {
+  const vaulter = {
+    landmarks: makePose({
+      x: 0.22 + index * 0.018,
+      wristY: 0.16,
+      kneeDrive: 0.03,
+      scale: 0.7,
+      visibility: 0.9,
+    }),
+  };
+  const otherAthlete = {
+    landmarks: makePose({
+      x: 0.72 - index * 0.018,
+      wristY: 0.34,
+      kneeDrive: 0.2,
+      scale: 0.7,
+      visibility: 0.9,
+    }),
+  };
+  return {
+    time: index / 10,
+    activePoseIndex: -1,
+    poses: index % 2 === 0 ? [vaulter, otherAthlete] : [otherAthlete, vaulter],
+  };
+});
+assignActivePoseTrack(crossingFrames);
+const highPlantTrackIds = crossingFrames
+  .map((frame) => frame.poses.find((pose) => pose.landmarks[LM.leftWrist].y < 0.2)?.trackId)
+  .filter(Number.isFinite);
+assert.equal(new Set(highPlantTrackIds).size, 1, "pose-shape matching should keep the high-plant vaulter on one track");
 
 const frames = makeFrames();
 const activeSeries = frames.map((frame) => ({ time: frame.time, pose: frame.poses[0] }));
@@ -174,6 +209,8 @@ assert.ok(analysis.vaultReport.metrics.some((metric) => metric.label === "Takeof
 assert.ok(analysis.vaultReport.drills.length > 0);
 assert.ok(analysis.researchBasis.some((item) => item.appliedTo.includes("takeoff angle")));
 assert.ok(Number.isFinite(analysis.metrics.takeoffAngleQuality) || analysis.metrics.takeoffAngleQuality === null);
+assert.ok(analysis.tracking.detectedTrackCount >= 1, "analysis should summarize detected tracks");
+assert.ok(Number.isFinite(analysis.poseFrames[0].poses[0].trackId), "analysis pose frames should expose track ids");
 
 const prioritized = prioritizeIssues(
   scoreIssues(
