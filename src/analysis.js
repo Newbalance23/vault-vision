@@ -8,6 +8,7 @@ import {
   firstIndexAfter,
   midpoint,
   movingAverage,
+  pointConfidence,
   round,
   segmentAngleDegrees,
 } from "./math.js";
@@ -28,9 +29,25 @@ const CAMERA_RELIABILITY = Object.freeze({
   rear: 0.58,
 });
 
-const TRACK_MAX_GAP = 12;
+const TRACK_MAX_GAP = 24;
 const TRACK_MIN_CORE_CONFIDENCE = 0.2;
 const TRACK_MIN_FILL_CONFIDENCE = 0.18;
+const TRACK_POSE_MATCH_LANDMARKS = Object.freeze([
+  LM.leftShoulder,
+  LM.rightShoulder,
+  LM.leftElbow,
+  LM.rightElbow,
+  LM.leftWrist,
+  LM.rightWrist,
+  LM.leftHip,
+  LM.rightHip,
+  LM.leftKnee,
+  LM.rightKnee,
+  LM.leftAnkle,
+  LM.rightAnkle,
+  LM.leftFootIndex,
+  LM.rightFootIndex,
+]);
 
 const VAULT_STYLE_DEFINITIONS = Object.freeze([
   {
@@ -153,6 +170,7 @@ export function analyzeVault({ frames = [], videoMeta = {}, calibration = {}, ca
       ...frame,
       form: frameScores[index] ?? emptyFrameScore(frame.time),
     })),
+    tracking: summarizePoseTracking(poseFrames),
     limitations: [
       "Single-camera pose estimation can miss pole, hand, and foot details when the athlete is occluded.",
       "Camera angle affects scoring confidence; side-view clips are most reliable for body-line metrics.",
@@ -181,6 +199,12 @@ export function selectActivePose(poses = []) {
 
 export function assignActivePoseTrack(poseFrames = []) {
   const tracks = [];
+  poseFrames.forEach((frame) => {
+    frame.poses?.forEach((pose) => {
+      delete pose.trackId;
+    });
+  });
+
   poseFrames.forEach((frame, frameIndex) => {
     const observations = poseObservations(frame, frameIndex);
     const matches = [];
@@ -224,6 +248,12 @@ export function assignActivePoseTrack(poseFrames = []) {
 
   poseFrames.forEach((frame) => {
     frame.activePoseIndex = -1;
+  });
+  tracks.forEach((track) => {
+    track.observations.forEach((observation) => {
+      const pose = poseFrames[observation.frameIndex]?.poses?.[observation.poseIndex];
+      if (pose) pose.trackId = track.id;
+    });
   });
   bestTrack.observations.forEach((observation) => {
     poseFrames[observation.frameIndex].activePoseIndex = observation.poseIndex;
@@ -692,6 +722,7 @@ function poseObservations(frame, frameIndex) {
       return {
         frameIndex,
         poseIndex,
+        landmarks,
         center: centerPoint,
         box,
         confidence,
@@ -709,15 +740,22 @@ function trackMatch(track, observation, frameIndex) {
   const predictedCenter = predictTrackCenter(track, frameIndex);
   const centerDistance = distance2d(observation.center, predictedCenter);
   const speed = distance2d({ x: 0, y: 0 }, track.velocity ?? { x: 0, y: 0 });
-  const maxDistance = clamp(0.13 + gap * 0.025 + speed * gap * 0.55, 0.15, 0.42);
+  const maxDistance = clamp(0.12 + gap * 0.02 + speed * gap * 0.65, 0.14, gap > 12 ? 0.52 : 0.42);
   const overlap = boxIou(observation.box, last.box);
   const sizeDelta = boxScaleDelta(observation.box, last.box);
+  const poseDelta = trackPoseDelta(track, observation);
 
-  if (centerDistance > maxDistance && overlap < 0.04) return null;
-  if (sizeDelta > 1.45 && overlap < 0.08) return null;
+  if (centerDistance > maxDistance && overlap < 0.04 && poseDelta > 0.72) return null;
+  if (sizeDelta > 1.45 && overlap < 0.08 && poseDelta > 0.64) return null;
 
   return {
-    cost: centerDistance / maxDistance + sizeDelta * 0.24 + gap * 0.025 - overlap * 0.42 - observation.confidence * 0.06,
+    cost:
+      centerDistance / maxDistance +
+      sizeDelta * 0.2 +
+      poseDelta * 0.5 +
+      gap * 0.022 -
+      overlap * 0.36 -
+      observation.confidence * 0.06,
   };
 }
 
@@ -725,9 +763,13 @@ function pushTrackObservation(track, observation) {
   const previous = track.observations.at(-1);
   if (previous) {
     const gap = Math.max(1, observation.frameIndex - previous.frameIndex);
-    track.velocity = {
+    const measuredVelocity = {
       x: (observation.center.x - previous.center.x) / gap,
       y: (observation.center.y - previous.center.y) / gap,
+    };
+    track.velocity = {
+      x: (track.velocity?.x ?? measuredVelocity.x) * 0.58 + measuredVelocity.x * 0.42,
+      y: (track.velocity?.y ?? measuredVelocity.y) * 0.58 + measuredVelocity.y * 0.42,
     };
   }
   track.observations.push(observation);
@@ -741,6 +783,42 @@ function predictTrackCenter(track, frameIndex) {
     x: clamp(last.center.x + (track.velocity?.x ?? 0) * gap, -0.2, 1.2),
     y: clamp(last.center.y + (track.velocity?.y ?? 0) * gap, -0.2, 1.2),
   };
+}
+
+function trackPoseDelta(track, observation) {
+  const candidates = track.observations.slice(-4);
+  if (!candidates.length) return 0.65;
+  return Math.min(...candidates.map((candidate) => normalizedPoseDelta(observation, candidate)));
+}
+
+function normalizedPoseDelta(a, b) {
+  const aScale = poseScale(a.box);
+  const bScale = poseScale(b.box);
+  const scale = Math.max(0.035, (aScale + bScale) / 2);
+  const aCenter = a.center ?? bboxCenter(a.box);
+  const bCenter = b.center ?? bboxCenter(b.box);
+  if (!aCenter || !bCenter) return 0.65;
+
+  const distances = TRACK_POSE_MATCH_LANDMARKS.map((index) => {
+    const ap = a.landmarks?.[index];
+    const bp = b.landmarks?.[index];
+    const confidence = Math.min(pointConfidence(ap), pointConfidence(bp));
+    if (confidence < 0.22) return null;
+    const ax = (ap.x - aCenter.x) / scale;
+    const ay = (ap.y - aCenter.y) / scale;
+    const bx = (bp.x - bCenter.x) / scale;
+    const by = (bp.y - bCenter.y) / scale;
+    return Math.hypot(ax - bx, ay - by);
+  }).filter(Number.isFinite);
+
+  if (distances.length < 4) return 0.65;
+  const mean = distances.reduce((sum, value) => sum + value, 0) / distances.length;
+  return clamp(mean / 1.8, 0, 1.4);
+}
+
+function poseScale(box) {
+  if (!box) return 0.08;
+  return Math.max(box.width ?? 0, box.height ?? 0, Math.sqrt(box.area ?? 0), 0.03);
 }
 
 function activeTrackScore(track, totalFrames) {
@@ -799,7 +877,10 @@ function fillTrackGaps(poseFrames, track) {
     const expected = expectedTrackAtFrame(observations, frameIndex);
     if (!expected) return;
     const fill = closestPoseToExpected(frame, expected);
-    if (fill) frame.activePoseIndex = fill.poseIndex;
+    if (fill) {
+      frame.activePoseIndex = fill.poseIndex;
+      frame.poses[fill.poseIndex].trackId = track.id;
+    }
   });
 }
 
@@ -890,6 +971,49 @@ function boxIou(a, b) {
 function boxScaleDelta(a, b) {
   if (!a?.area || !b?.area) return 0.6;
   return Math.min(2, Math.abs(Math.log((a.area + 0.00001) / (b.area + 0.00001))));
+}
+
+function summarizePoseTracking(poseFrames = []) {
+  const trackMap = new Map();
+  let activeTrackId = null;
+
+  poseFrames.forEach((frame, frameIndex) => {
+    const activePose = frame.poses?.[frame.activePoseIndex];
+    if (Number.isFinite(activePose?.trackId)) activeTrackId = activePose.trackId;
+    frame.poses?.forEach((pose) => {
+      if (!Number.isFinite(pose.trackId)) return;
+      const landmarks = pose.landmarks ?? pose;
+      const current =
+        trackMap.get(pose.trackId) ?? {
+          id: pose.trackId,
+          firstFrame: frameIndex,
+          lastFrame: frameIndex,
+          frames: 0,
+          confidenceSum: 0,
+        };
+      current.firstFrame = Math.min(current.firstFrame, frameIndex);
+      current.lastFrame = Math.max(current.lastFrame, frameIndex);
+      current.frames += 1;
+      current.confidenceSum += averageConfidence(landmarks, REQUIRED_GROUPS.core);
+      trackMap.set(pose.trackId, current);
+    });
+  });
+
+  const tracks = [...trackMap.values()]
+    .sort((a, b) => a.id - b.id)
+    .map((track) => ({
+      id: track.id,
+      firstFrame: track.firstFrame,
+      lastFrame: track.lastFrame,
+      frameCount: track.frames,
+      averageConfidence: round(track.confidenceSum / Math.max(1, track.frames), 2),
+    }));
+
+  return {
+    activeTrackId,
+    tracks,
+    detectedTrackCount: tracks.length,
+  };
 }
 
 function stripPoint(point) {

@@ -1,4 +1,4 @@
-import { analyzeVault, annotateFrameScores } from "./analysis.js?v=2026-05-20-entry-overlay";
+import { analyzeVault, annotateFrameScores, assignActivePoseTrack } from "./analysis.js?v=2026-05-21-tracking";
 
 const TASKS_VERSION = "latest";
 const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;
@@ -12,6 +12,10 @@ const MODEL_PATHS = Object.freeze({
 
 let mediaPipeModule;
 const landmarkerCache = new Map();
+const liveTracking = {
+  key: "",
+  frames: [],
+};
 
 export async function createPoseLandmarker({ modelVariant = "full", numPoses = 8 } = {}) {
   const cacheKey = `${modelVariant}:${numPoses}`;
@@ -111,15 +115,15 @@ export async function detectVideoFrame(video, options = {}) {
   const result = landmarker.detectForVideo(video, Math.round(video.currentTime * 1000));
   const frame = {
     time: video.currentTime,
-    activePoseIndex: 0,
+    activePoseIndex: -1,
     poses: (result.landmarks ?? []).map((landmarks, poseIndex) => ({
       landmarks: landmarks.map(copyLandmark),
       worldLandmarks: (result.worldLandmarks?.[poseIndex] ?? []).map(copyLandmark),
     })),
   };
-  frame.activePoseIndex = selectLargestPose(frame.poses);
+  const trackedFrame = updateLiveTracking(video, frame);
   const phaseRanges = roughPhaseRanges(duration);
-  const [form] = annotateFrameScores([frame], phaseRanges, cameraAngle);
+  const [form] = annotateFrameScores([trackedFrame], phaseRanges, cameraAngle);
   return {
     schemaVersion: "vault-vision.live-preview.v1",
     videoMeta: {
@@ -129,7 +133,7 @@ export async function detectVideoFrame(video, options = {}) {
     },
     cameraAngle,
     phaseRanges,
-    poseFrames: [{ ...frame, form }],
+    poseFrames: [{ ...trackedFrame, form }],
   };
 }
 
@@ -158,6 +162,30 @@ function selectLargestPose(poses = []) {
     }
   });
   return bestIndex;
+}
+
+function updateLiveTracking(video, frame) {
+  const key = `${video.currentSrc || video.src}|${video.duration || 0}|${video.videoWidth || 0}x${video.videoHeight || 0}`;
+  const lastFrame = liveTracking.frames.at(-1);
+  if (liveTracking.key !== key || (lastFrame && frame.time + 0.04 < lastFrame.time)) {
+    liveTracking.key = key;
+    liveTracking.frames = [];
+  }
+
+  liveTracking.frames.push(frame);
+  if (liveTracking.frames.length > 48) liveTracking.frames.shift();
+
+  liveTracking.frames.forEach((item) => {
+    item.activePoseIndex = -1;
+    item.poses?.forEach((pose) => {
+      delete pose.trackId;
+    });
+  });
+  assignActivePoseTrack(liveTracking.frames);
+
+  const current = liveTracking.frames.at(-1);
+  if (current.activePoseIndex === -1) current.activePoseIndex = selectLargestPose(current.poses);
+  return current;
 }
 
 function roughPhaseRanges(duration = 0) {
