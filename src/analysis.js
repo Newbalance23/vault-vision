@@ -100,6 +100,30 @@ export function analyzeVault({ frames = [], videoMeta = {}, calibration = {}, ca
     }));
 
   assignActivePoseTrack(poseFrames);
+  return buildAnalysisResult({ poseFrames, videoMeta, calibration, cameraAngle });
+}
+
+export function overrideAnalysisActiveTrack(analysis, trackId) {
+  if (!analysis || !Number.isFinite(trackId)) return analysis;
+  const poseFrames = (analysis.poseFrames ?? []).map((frame) => ({
+    time: frame.time,
+    activePoseIndex: -1,
+    poses: (frame.poses ?? []).map((pose) => normalizePose(pose)),
+  }));
+  const matched = applyActiveTrackOverride(poseFrames, trackId);
+  if (!matched) return analysis;
+  return {
+    ...buildAnalysisResult({
+      poseFrames,
+      videoMeta: analysis.videoMeta ?? {},
+      calibration: analysis.calibration ?? {},
+      cameraAngle: analysis.cameraAngle ?? "auto",
+    }),
+    selectedTrackId: trackId,
+  };
+}
+
+function buildAnalysisResult({ poseFrames = [], videoMeta = {}, calibration = {}, cameraAngle = "auto" } = {}) {
 
   const activeSeries = poseFrames
     .map((frame) => ({
@@ -265,6 +289,16 @@ export function assignActivePoseTrack(poseFrames = []) {
 
   fillTrackGaps(poseFrames, bestTrack, activeStartFrame);
   return poseFrames;
+}
+
+function applyActiveTrackOverride(poseFrames, trackId) {
+  let matched = false;
+  poseFrames.forEach((frame) => {
+    const poseIndex = frame.poses.findIndex((pose) => pose.trackId === trackId);
+    frame.activePoseIndex = poseIndex;
+    if (poseIndex >= 0) matched = true;
+  });
+  return matched;
 }
 
 export function detectPhases(activeSeries = [], duration = 0) {
@@ -687,10 +721,13 @@ export function prioritizeIssues(issues = []) {
 }
 
 function normalizePose(pose) {
-  return {
+  const normalized = {
     landmarks: (pose.landmarks ?? pose ?? []).map(stripPoint),
     worldLandmarks: (pose.worldLandmarks ?? []).map(stripPoint),
   };
+  if (Number.isFinite(pose.trackId)) normalized.trackId = pose.trackId;
+  if (typeof pose.sourceTile === "string") normalized.sourceTile = pose.sourceTile;
+  return normalized;
 }
 
 function poseCenter(landmarks) {

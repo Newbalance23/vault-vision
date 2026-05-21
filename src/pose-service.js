@@ -1,6 +1,6 @@
-import { analyzeVault, annotateFrameScores, assignActivePoseTrack } from "./analysis.js?v=2026-05-21-ai-tracking";
-import { REQUIRED_GROUPS } from "./landmarks.js?v=2026-05-21-ai-tracking";
-import { averageConfidence, boundingBox, clamp } from "./math.js?v=2026-05-21-ai-tracking";
+import { analyzeVault, annotateFrameScores, assignActivePoseTrack } from "./analysis.js?v=2026-05-21-follow-tracking";
+import { REQUIRED_GROUPS } from "./landmarks.js?v=2026-05-21-follow-tracking";
+import { averageConfidence, boundingBox, clamp } from "./math.js?v=2026-05-21-follow-tracking";
 
 const TASKS_VERSION = "latest";
 const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;
