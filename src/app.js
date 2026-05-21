@@ -1,8 +1,9 @@
-import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-21-ai-tracking";
-import { canvasPointToVideoPoint, drawOverlay } from "./renderer.js?v=2026-05-21-ai-tracking";
-import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-21-ai-tracking";
-import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-21-ai-tracking";
-import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-21-ai-tracking";
+import { overrideAnalysisActiveTrack } from "./analysis.js?v=2026-05-21-follow-tracking";
+import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-21-follow-tracking";
+import { canvasPointToVideoPoint, drawOverlay } from "./renderer.js?v=2026-05-21-follow-tracking";
+import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-21-follow-tracking";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-21-follow-tracking";
+import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-21-follow-tracking";
 
 const elements = {
   appShell: document.querySelector(".app-shell"),
@@ -73,6 +74,8 @@ const state = {
   sourceKind: "",
   objectUrl: null,
   analysis: null,
+  autoAnalysis: null,
+  followTrackId: null,
   livePreview: null,
   liveDetecting: false,
   liveReady: false,
@@ -125,7 +128,11 @@ function bindEvents() {
   });
   elements.clearCalibrationButton.addEventListener("click", () => {
     state.calibration = {};
-    elements.calibrationMessage.textContent = "Calibration markers cleared.";
+    state.followTrackId = null;
+    if (state.autoAnalysis) state.analysis = state.autoAnalysis;
+    elements.calibrationMessage.textContent = "Markers and follow lock cleared.";
+    renderResults();
+    updateLiveForm();
     drawCurrentOverlay();
   });
   elements.saveAnalysisButton.addEventListener("click", saveAnalysis);
@@ -303,7 +310,7 @@ async function runAnalysis() {
   elements.exportJsonButton.disabled = true;
   setProgress(0.02, "Preparing video...");
   try {
-    state.analysis = await analyzeVideoWithPose(elements.vaultVideo, {
+    const analysis = await analyzeVideoWithPose(elements.vaultVideo, {
       fileName: state.file?.name ?? state.sourceName,
       sampleRate: Number(elements.sampleRateSelect.value),
       modelVariant: elements.modelVariantSelect.value,
@@ -311,6 +318,9 @@ async function runAnalysis() {
       calibration: state.calibration,
       onProgress: ({ progress, message }) => setProgress(progress, message),
     });
+    state.autoAnalysis = analysis;
+    state.analysis = analysis;
+    state.followTrackId = null;
     elements.saveAnalysisButton.disabled = false;
     elements.exportJsonButton.disabled = false;
     renderResults();
@@ -325,12 +335,16 @@ async function runAnalysis() {
 }
 
 function handleCanvasClick(event) {
-  if (!state.activeTool) return;
   const point = canvasPointToVideoPoint(elements.overlayCanvas, elements.vaultVideo, event.clientX, event.clientY);
   if (!point) {
     elements.calibrationMessage.textContent = "Click inside the visible video frame.";
     return;
   }
+  if (state.activeTool === "vaulter" || (!state.activeTool && state.analysis)) {
+    selectVaulterAtPoint(point);
+    return;
+  }
+  if (!state.activeTool) return;
 
   const current = state.calibration[state.activeTool] ?? [];
   const next = state.activeTool === "box" ? [point] : current.length >= 2 ? [point] : [...current, point];
@@ -345,9 +359,82 @@ function setActiveTool(tool) {
   document.querySelectorAll("[data-tool]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.tool === state.activeTool);
   });
-  elements.calibrationMessage.textContent = state.activeTool
-    ? `Mark ${state.activeTool}; click the video frame.`
-    : "Select a marker, then click the video.";
+  elements.calibrationMessage.textContent =
+    state.activeTool === "vaulter"
+      ? "Click the vaulter skeleton to follow."
+      : state.activeTool
+        ? `Mark ${state.activeTool}; click the video frame.`
+        : "Use Vaulter to choose who to follow, or mark box/runway/bar/pole.";
+}
+
+function selectVaulterAtPoint(point) {
+  if (!state.analysis?.poseFrames?.length) {
+    elements.calibrationMessage.textContent = "Run analysis first, then click the vaulter to follow.";
+    return;
+  }
+  const frame = nearestPoseFrame(state.analysis.poseFrames, elements.vaultVideo.currentTime || 0);
+  const match = findPoseAtPoint(frame, point);
+  if (!match || !Number.isFinite(match.pose.trackId)) {
+    elements.calibrationMessage.textContent = "No tracked vaulter found at that spot.";
+    return;
+  }
+
+  const baseAnalysis = state.autoAnalysis ?? state.analysis;
+  const updated = overrideAnalysisActiveTrack(baseAnalysis, match.pose.trackId);
+  if (!updated || updated === baseAnalysis) {
+    elements.calibrationMessage.textContent = "That track could not be followed across the jump.";
+    return;
+  }
+
+  state.followTrackId = match.pose.trackId;
+  state.analysis = updated;
+  elements.calibrationMessage.textContent = "Following selected vaulter. Click another skeleton to switch.";
+  renderResults();
+  updateLiveForm();
+  drawCurrentOverlay();
+}
+
+function findPoseAtPoint(frame, point) {
+  if (!frame?.poses?.length) return null;
+  const candidates = frame.poses
+    .map((pose, poseIndex) => {
+      const box = poseBox(pose.landmarks);
+      if (!box) return null;
+      const padded = {
+        minX: box.minX - 0.04,
+        minY: box.minY - 0.06,
+        maxX: box.maxX + 0.04,
+        maxY: box.maxY + 0.06,
+      };
+      const inside = point.x >= padded.minX && point.x <= padded.maxX && point.y >= padded.minY && point.y <= padded.maxY;
+      const centerDistance = Math.hypot(point.x - (box.minX + box.maxX) / 2, point.y - (box.minY + box.maxY) / 2);
+      const landmarkDistance = nearestLandmarkDistance(pose.landmarks, point);
+      const score = (inside ? 0 : 0.35) + Math.min(centerDistance, 0.6) + Math.min(landmarkDistance, 0.6) * 0.8;
+      return { pose, poseIndex, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score);
+  return candidates[0]?.score < 0.48 ? candidates[0] : null;
+}
+
+function poseBox(landmarks = []) {
+  const valid = landmarks.filter((point) => (point.visibility ?? 1) > 0.22);
+  if (!valid.length) return null;
+  const xs = valid.map((point) => point.x);
+  const ys = valid.map((point) => point.y);
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
+}
+
+function nearestLandmarkDistance(landmarks = [], point) {
+  return landmarks.reduce((best, landmark) => {
+    if ((landmark.visibility ?? 1) < 0.3) return best;
+    return Math.min(best, Math.hypot(point.x - landmark.x, point.y - landmark.y));
+  }, Infinity);
 }
 
 async function saveAnalysis() {
@@ -438,6 +525,8 @@ async function loadLibraryItem(item) {
     state.sourceName = video.file_name ?? "saved-video";
     state.sourceKind = "cloud";
     state.analysis = analysis;
+    state.autoAnalysis = analysis;
+    state.followTrackId = analysis.selectedTrackId ?? null;
     state.calibration = analysis.calibration ?? {};
     elements.vaultVideo.src = signedUrl;
     elements.vaultVideo.load();
@@ -464,6 +553,8 @@ function loadLocalLibraryItem(item) {
   state.sourceName = video?.file_name ?? "saved-report";
   state.sourceKind = "local";
   state.analysis = analysis;
+  state.autoAnalysis = analysis;
+  state.followTrackId = analysis.selectedTrackId ?? null;
   state.livePreview = null;
   state.calibration = analysis.calibration ?? item.calibration ?? {};
   if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
@@ -1050,6 +1141,8 @@ function loadVideoSource({ url, name, kind, file = null, objectUrl = false }) {
   state.sourceName = name || "vault-video";
   state.sourceKind = kind || "url";
   state.analysis = null;
+  state.autoAnalysis = null;
+  state.followTrackId = null;
   state.livePreview = null;
   state.liveReady = false;
   if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
