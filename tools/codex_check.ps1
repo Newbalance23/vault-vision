@@ -9,6 +9,7 @@ try {
   & $node --check "src/analysis.js"
   & $node --check "src/app.js"
   & $node --check "src/pose-service.js"
+  & $node --check "src/renderer.js"
   & $node "tests/analysis.test.mjs"
 } finally {
   Pop-Location

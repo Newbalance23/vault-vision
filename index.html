@@ -4,10 +4,43 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vault Vision</title>
-    <link rel="stylesheet" href="./src/styles.css?v=2026-05-20-tracking" />
+    <link rel="stylesheet" href="./src/styles.css?v=2026-05-20-entry-overlay" />
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
   </head>
   <body>
+    <section id="entryGate" class="entry-gate" aria-labelledby="entryTitle">
+      <div class="entry-card">
+        <p class="eyebrow">Vault Vision</p>
+        <h1 id="entryTitle">Sign in to start</h1>
+        <p>Analyze pole vault videos with stick-figure tracking, form colors, and a vault report.</p>
+        <div class="entry-fields">
+          <label>
+            <span>Email</span>
+            <input id="entryEmailInput" type="email" autocomplete="email" placeholder="you@example.com" />
+          </label>
+          <label>
+            <span>Password</span>
+            <input id="entryPasswordInput" type="password" autocomplete="current-password" placeholder="Password" />
+          </label>
+        </div>
+        <div class="entry-actions">
+          <button id="entrySignInButton" class="primary-button" type="button">
+            <i data-lucide="log-in"></i>
+            <span>Sign in</span>
+          </button>
+          <button id="entrySignUpButton" class="secondary-button" type="button">
+            <i data-lucide="user-plus"></i>
+            <span>Create account</span>
+          </button>
+          <button id="guestEntryButton" class="ghost-button" type="button">
+            <i data-lucide="play"></i>
+            <span>No sign in use</span>
+          </button>
+        </div>
+        <p id="entryMessage" class="message-line">Sign in for cloud saves, or use the app without signing in.</p>
+      </div>
+    </section>
+
     <div class="app-shell">
       <header class="topbar">
         <div>
@@ -16,17 +49,11 @@
           <p class="topbar-copy">Every jump gets a score, a color-coded overlay, and a focused plan.</p>
         </div>
         <div class="topbar-actions">
-          <div class="mode-toggle" role="group" aria-label="Review mode">
-            <button id="coachModeButton" class="mode-button is-active" type="button" data-mode="coach">
-              <i data-lucide="clipboard-check"></i>
-              <span>Coach</span>
-            </button>
-            <button id="athleteModeButton" class="mode-button" type="button" data-mode="athlete">
-              <i data-lucide="sparkles"></i>
-              <span>Athlete</span>
-            </button>
-          </div>
           <span id="cloudStatus" class="status-pill status-muted">Cloud not configured</span>
+          <button id="signOutButton" class="ghost-button hidden" type="button">
+            <i data-lucide="log-out"></i>
+            <span>Sign out</span>
+          </button>
           <button id="refreshLibraryButton" class="icon-button" type="button" title="Refresh library" aria-label="Refresh library">
             <i data-lucide="refresh-cw"></i>
           </button>
@@ -40,10 +67,6 @@
               <p class="eyebrow">Cloud</p>
               <h2 id="cloudSetupTitle">Supabase account</h2>
             </div>
-            <button id="signOutButton" class="ghost-button hidden" type="button">
-              <i data-lucide="log-out"></i>
-              <span>Sign out</span>
-            </button>
           </div>
 
           <div class="config-grid">
@@ -64,7 +87,7 @@
           <div id="authControls" class="auth-grid">
             <label>
               <span>Email</span>
-              <input id="emailInput" type="email" autocomplete="email" placeholder="coach@example.com" />
+              <input id="emailInput" type="email" autocomplete="email" placeholder="you@example.com" />
             </label>
             <label>
               <span>Password</span>
@@ -101,6 +124,14 @@
                 <i data-lucide="activity"></i>
                 <span>Analyze</span>
               </button>
+              <button id="saveAnalysisButton" class="secondary-button" type="button" disabled>
+                <i data-lucide="save"></i>
+                <span>Save</span>
+              </button>
+              <button id="exportJsonButton" class="ghost-button" type="button" disabled>
+                <i data-lucide="file-json"></i>
+                <span>Export</span>
+              </button>
             </div>
           </div>
 
@@ -109,8 +140,11 @@
           <div class="video-stage" id="videoStage">
             <video id="vaultVideo" playsinline controls preload="metadata"></video>
             <canvas id="overlayCanvas"></canvas>
+            <button id="videoPlayButton" class="video-play-button hidden" type="button" aria-label="Play video">
+              <i data-lucide="play"></i>
+            </button>
             <div id="emptyVideoState" class="empty-video-state">
-              <canvas id="runwaySketch" width="900" height="420" aria-hidden="true"></canvas>
+              <i data-lucide="video"></i>
               <p>Load a pole vault clip to begin review.</p>
             </div>
           </div>
@@ -136,6 +170,11 @@
               <output id="timeReadout">0.00s</output>
             </div>
           </div>
+
+          <div id="progressBlock" class="progress-block hidden">
+            <div class="progress-track"><span id="progressBar"></span></div>
+            <p id="progressText">Preparing analysis...</p>
+          </div>
         </section>
 
         <section class="panel controls-panel" aria-labelledby="controlsTitle">
@@ -148,8 +187,8 @@
 
           <div class="field-stack">
             <label>
-              <span>Athlete</span>
-              <input id="athleteNameInput" type="text" autocomplete="off" placeholder="Athlete name" />
+              <span>Vaulter name</span>
+              <input id="athleteNameInput" type="text" autocomplete="off" placeholder="Vaulter name" />
             </label>
             <label>
               <span>Session title</span>
@@ -207,21 +246,6 @@
           </div>
           <p id="calibrationMessage" class="message-line">Select a marker, then click the video.</p>
 
-          <div class="button-row">
-            <button id="saveAnalysisButton" class="secondary-button" type="button" disabled>
-              <i data-lucide="save"></i>
-              <span>Save analysis</span>
-            </button>
-            <button id="exportJsonButton" class="ghost-button" type="button" disabled>
-              <i data-lucide="file-json"></i>
-              <span>Export JSON</span>
-            </button>
-          </div>
-
-          <div id="progressBlock" class="progress-block hidden">
-            <div class="progress-track"><span id="progressBar"></span></div>
-            <p id="progressText">Preparing analysis...</p>
-          </div>
         </section>
 
         <section class="panel results-panel" aria-labelledby="resultsTitle">
@@ -268,6 +292,6 @@
       </main>
     </div>
 
-    <script type="module" src="./src/app.js?v=2026-05-20-tracking"></script>
+    <script type="module" src="./src/app.js?v=2026-05-20-entry-overlay"></script>
   </body>
 </html>

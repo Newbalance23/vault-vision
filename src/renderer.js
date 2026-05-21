@@ -4,7 +4,7 @@ import { pointConfidence } from "./math.js";
 const COLORS = Object.freeze({
   active: "#31d5c8",
   activeJoint: "#ffffff",
-  secondary: "rgba(217, 226, 223, 0.56)",
+  posePalette: ["#7ddbd2", "#ffca58", "#a78bfa", "#f97316", "#5eead4", "#60a5fa", "#fb7185"],
   marker: "#ffca58",
   markerLine: "rgba(255, 202, 88, 0.9)",
   text: "rgba(255, 255, 255, 0.92)",
@@ -60,7 +60,7 @@ export function drawOverlay({ canvas, video, analysis, calibration = {}, current
 
   frame.poses.forEach((pose, poseIndex) => {
     const isActive = poseIndex === frame.activePoseIndex;
-    drawPose(context, pose.landmarks, videoRect, isActive, isActive ? frame.form : null);
+    drawPose(context, pose.landmarks, videoRect, isActive, isActive ? frame.form : null, poseIndex);
   });
 
   drawPhaseLabel(context, analysis, currentTime, videoRect);
@@ -81,79 +81,27 @@ export function canvasPointToVideoPoint(canvas, video, clientX, clientY) {
   };
 }
 
-export function drawRunwaySketch(canvas) {
-  const context = canvas.getContext("2d");
-  const { width, height } = canvas;
-  context.clearRect(0, 0, width, height);
-  const gradient = context.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, "#152321");
-  gradient.addColorStop(1, "#213a37");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, width, height);
-
-  context.strokeStyle = "rgba(255,255,255,0.16)";
-  context.lineWidth = 2;
-  for (let i = 0; i < 7; i += 1) {
-    const y = 90 + i * 42;
-    context.beginPath();
-    context.moveTo(80, y);
-    context.lineTo(width - 90, y + 38);
-    context.stroke();
-  }
-
-  context.strokeStyle = "rgba(49,213,200,0.82)";
-  context.lineWidth = 8;
-  context.lineCap = "round";
-  context.beginPath();
-  context.moveTo(140, 285);
-  context.lineTo(640, 142);
-  context.stroke();
-
-  context.strokeStyle = "rgba(255,202,88,0.92)";
-  context.lineWidth = 6;
-  context.beginPath();
-  context.moveTo(660, 142);
-  context.lineTo(795, 78);
-  context.stroke();
-
-  drawStickFigure(context, 560, 164, 1.25);
-}
-
-function drawStickFigure(context, x, y, scale) {
-  context.strokeStyle = "#f4fbf9";
-  context.fillStyle = "#f4fbf9";
-  context.lineWidth = 8;
-  context.lineCap = "round";
-  context.beginPath();
-  context.arc(x, y - 76 * scale, 15 * scale, 0, Math.PI * 2);
-  context.fill();
-  line(context, x - 20 * scale, y - 45 * scale, x + 18 * scale, y + 10 * scale);
-  line(context, x - 18 * scale, y - 40 * scale, x - 76 * scale, y - 88 * scale);
-  line(context, x + 12 * scale, y - 28 * scale, x + 78 * scale, y - 118 * scale);
-  line(context, x + 18 * scale, y + 10 * scale, x - 38 * scale, y + 76 * scale);
-  line(context, x + 18 * scale, y + 10 * scale, x + 82 * scale, y + 54 * scale);
-}
-
-function drawPose(context, landmarks, videoRect, isActive, form) {
+function drawPose(context, landmarks, videoRect, isActive, form, poseIndex = 0) {
   if (!landmarks?.length) return;
   context.save();
   context.lineCap = "round";
   context.lineJoin = "round";
-  context.lineWidth = isActive ? 4 : 2;
+  context.lineWidth = isActive ? 4 : 3;
+  const secondaryColor = secondaryPoseColor(poseIndex);
 
   SKELETON_CONNECTIONS.forEach(([from, to]) => {
     const a = landmarks[from];
     const b = landmarks[to];
     if (pointConfidence(a) < 0.28 || pointConfidence(b) < 0.28) return;
-    context.strokeStyle = isActive ? colorForConnection(from, to, form) : COLORS.secondary;
+    context.strokeStyle = isActive ? colorForConnection(from, to, form) : secondaryColor;
     line(context, mapX(a, videoRect), mapY(a, videoRect), mapX(b, videoRect), mapY(b, videoRect));
   });
 
   landmarks.forEach((point) => {
     if (pointConfidence(point) < 0.35) return;
-    context.fillStyle = isActive ? colorForJoint(point, form) : COLORS.secondary;
+    context.fillStyle = isActive ? colorForJoint(point, form) : secondaryColor;
     context.beginPath();
-    context.arc(mapX(point, videoRect), mapY(point, videoRect), isActive ? 4 : 2.2, 0, Math.PI * 2);
+    context.arc(mapX(point, videoRect), mapY(point, videoRect), isActive ? 4 : 3, 0, Math.PI * 2);
     context.fill();
   });
 
@@ -234,6 +182,10 @@ function colorForJoint(point, form) {
   const alpha = Math.max(0.45, pointConfidence(point));
   const hex = STATUS_COLORS[form?.status] ?? COLORS.activeJoint;
   return hexToRgba(hex, alpha);
+}
+
+function secondaryPoseColor(index, alpha = 0.82) {
+  return hexToRgba(COLORS.posePalette[index % COLORS.posePalette.length], alpha);
 }
 
 function hexToRgba(hex, alpha = 1) {
