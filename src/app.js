@@ -1,13 +1,18 @@
-import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-20-tracking";
-import { canvasPointToVideoPoint, drawOverlay, drawRunwaySketch } from "./renderer.js?v=2026-05-20-tracking";
-import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-20-tracking";
-import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-20-tracking";
-import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-20-tracking";
+import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-20-entry-overlay";
+import { canvasPointToVideoPoint, drawOverlay } from "./renderer.js?v=2026-05-20-entry-overlay";
+import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-20-entry-overlay";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-20-entry-overlay";
+import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-20-entry-overlay";
 
 const elements = {
   appShell: document.querySelector(".app-shell"),
-  coachModeButton: document.querySelector("#coachModeButton"),
-  athleteModeButton: document.querySelector("#athleteModeButton"),
+  entryGate: document.querySelector("#entryGate"),
+  entryEmailInput: document.querySelector("#entryEmailInput"),
+  entryPasswordInput: document.querySelector("#entryPasswordInput"),
+  entrySignInButton: document.querySelector("#entrySignInButton"),
+  entrySignUpButton: document.querySelector("#entrySignUpButton"),
+  guestEntryButton: document.querySelector("#guestEntryButton"),
+  entryMessage: document.querySelector("#entryMessage"),
   cloudStatus: document.querySelector("#cloudStatus"),
   refreshLibraryButton: document.querySelector("#refreshLibraryButton"),
   signOutButton: document.querySelector("#signOutButton"),
@@ -24,9 +29,9 @@ const elements = {
   runAnalysisButton: document.querySelector("#runAnalysisButton"),
   vaultVideo: document.querySelector("#vaultVideo"),
   overlayCanvas: document.querySelector("#overlayCanvas"),
+  videoPlayButton: document.querySelector("#videoPlayButton"),
   emptyVideoState: document.querySelector("#emptyVideoState"),
   emptyVideoMessage: document.querySelector("#emptyVideoState p"),
-  runwaySketch: document.querySelector("#runwaySketch"),
   sessionSnapshot: document.querySelector("#sessionSnapshot"),
   phaseTimeline: document.querySelector("#phaseTimeline"),
   phaseLegend: document.querySelector("#phaseLegend"),
@@ -76,27 +81,26 @@ const state = {
   activeTool: null,
   library: [],
   localLibrary: loadLocalSessions(),
-  viewMode: "coach",
+  entryDismissed: sessionStorage.getItem("vaultVisionEntry") === "guest",
 };
 
 init();
 
 async function init() {
-  drawRunwaySketch(elements.runwaySketch);
   bindEvents();
-  setReviewMode("coach");
   hydrateConfig();
   await initCloud();
   loadVideoFromQuery();
+  renderEntryGate();
   renderAll();
   requestAnimationFrame(syncOverlay);
   window.lucide?.createIcons();
 }
 
 function bindEvents() {
-  [elements.coachModeButton, elements.athleteModeButton].forEach((button) => {
-    button.addEventListener("click", () => setReviewMode(button.dataset.mode));
-  });
+  elements.entrySignInButton.addEventListener("click", () => handleEntryAuth("signIn"));
+  elements.entrySignUpButton.addEventListener("click", () => handleEntryAuth("signUp"));
+  elements.guestEntryButton.addEventListener("click", enterGuestMode);
   elements.saveConfigButton.addEventListener("click", handleSaveConfig);
   elements.signInButton.addEventListener("click", () => handleAuth("signIn"));
   elements.signUpButton.addEventListener("click", () => handleAuth("signUp"));
@@ -104,11 +108,15 @@ function bindEvents() {
   elements.refreshLibraryButton.addEventListener("click", refreshLibrary);
   elements.videoInput.addEventListener("change", handleVideoSelected);
   elements.runAnalysisButton.addEventListener("click", runAnalysis);
+  elements.videoPlayButton.addEventListener("click", toggleVideoPlayback);
   elements.vaultVideo.addEventListener("loadedmetadata", handleVideoMetadata);
   elements.vaultVideo.addEventListener("play", () => {
     state.liveReady = true;
+    updateVideoPlayButton();
     scheduleLivePreview();
   });
+  elements.vaultVideo.addEventListener("pause", updateVideoPlayButton);
+  elements.vaultVideo.addEventListener("ended", updateVideoPlayButton);
   elements.vaultVideo.addEventListener("timeupdate", handleTimeUpdate);
   elements.timeSlider.addEventListener("input", handleSliderInput);
   elements.overlayCanvas.addEventListener("click", handleCanvasClick);
@@ -131,6 +139,29 @@ function hydrateConfig() {
   elements.supabaseAnonInput.value = state.config.anonKey ?? "";
 }
 
+async function handleEntryAuth(mode) {
+  if (!state.cloud) {
+    setEntryMessage("Cloud sign in is not configured yet. Use No sign in use to analyze videos now.", true);
+    return;
+  }
+  elements.emailInput.value = elements.entryEmailInput.value.trim();
+  elements.passwordInput.value = elements.entryPasswordInput.value;
+  await handleAuth(mode, { fromEntry: true });
+}
+
+function enterGuestMode() {
+  state.entryDismissed = true;
+  sessionStorage.setItem("vaultVisionEntry", "guest");
+  setEntryMessage("Guest mode ready. Load a clip to analyze.");
+  renderEntryGate();
+}
+
+function renderEntryGate() {
+  const shouldShow = !state.entryDismissed && !state.session?.user;
+  elements.entryGate.classList.toggle("hidden", !shouldShow);
+  elements.appShell.setAttribute("aria-hidden", String(shouldShow));
+}
+
 async function initCloud() {
   if (!state.config?.url || !state.config?.anonKey) {
     setCloudStatus("Cloud not configured", "muted");
@@ -141,6 +172,8 @@ async function initCloud() {
     state.session = await state.cloud.getSession();
     state.cloud.onAuthStateChange((session) => {
       state.session = session;
+      if (session?.user) state.entryDismissed = true;
+      renderEntryGate();
       renderAuthState();
       refreshLibrary();
     });
@@ -168,7 +201,7 @@ async function handleSaveConfig() {
   renderAll();
 }
 
-async function handleAuth(mode) {
+async function handleAuth(mode, options = {}) {
   if (!state.cloud) {
     setSetupMessage("Connect a Supabase project first.", true);
     return;
@@ -182,10 +215,17 @@ async function handleAuth(mode) {
   try {
     state.session = mode === "signIn" ? await state.cloud.signIn(email, password) : await state.cloud.signUp(email, password);
     setSetupMessage(mode === "signIn" ? "Signed in." : "Account created. Check email confirmation if required.");
+    if (options.fromEntry) {
+      state.entryDismissed = true;
+      sessionStorage.setItem("vaultVisionEntry", "signed-in");
+      setEntryMessage(mode === "signIn" ? "Signed in." : "Account created.");
+      renderEntryGate();
+    }
     await refreshLibrary();
     renderAll();
   } catch (error) {
     setSetupMessage(error.message, true);
+    if (options.fromEntry) setEntryMessage(error.message, true);
   }
 }
 
@@ -194,6 +234,9 @@ async function handleSignOut() {
     await state.cloud?.signOut();
     state.session = null;
     state.library = [];
+    state.entryDismissed = false;
+    sessionStorage.removeItem("vaultVisionEntry");
+    renderEntryGate();
     renderAll();
   } catch (error) {
     setSetupMessage(error.message, true);
@@ -213,10 +256,12 @@ function handleVideoSelected(event) {
 }
 
 function handleVideoMetadata() {
+  state.liveReady = true;
   elements.timeSlider.max = String(elements.vaultVideo.duration || 0);
   elements.timeSlider.disabled = false;
   updateTimeReadout();
   updateLiveForm();
+  updateVideoPlayButton();
   drawCurrentOverlay();
 }
 
@@ -232,6 +277,20 @@ function handleSliderInput() {
   elements.vaultVideo.currentTime = Number(elements.timeSlider.value);
   updateTimeReadout();
   updateLiveForm();
+}
+
+async function toggleVideoPlayback() {
+  if (!state.sourceName) return;
+  try {
+    if (elements.vaultVideo.paused || elements.vaultVideo.ended) {
+      await elements.vaultVideo.play();
+    } else {
+      elements.vaultVideo.pause();
+    }
+    updateVideoPlayButton();
+  } catch (error) {
+    setProgressMessage(`Unable to play video: ${error.message}`, true);
+  }
 }
 
 async function runAnalysis() {
@@ -282,6 +341,7 @@ function handleCanvasClick(event) {
 
 function setActiveTool(tool) {
   state.activeTool = state.activeTool === tool ? null : tool;
+  elements.overlayCanvas.classList.toggle("is-calibrating", Boolean(state.activeTool));
   document.querySelectorAll("[data-tool]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.tool === state.activeTool);
   });
@@ -380,6 +440,7 @@ async function loadLibraryItem(item) {
     state.analysis = analysis;
     state.calibration = analysis.calibration ?? {};
     elements.vaultVideo.src = signedUrl;
+    elements.vaultVideo.load();
     elements.emptyVideoState.classList.add("hidden");
     elements.sessionTitleInput.value = item.title ?? "";
     elements.athleteNameInput.value = item.athletes?.display_name ?? "";
@@ -409,6 +470,7 @@ function loadLocalLibraryItem(item) {
   state.objectUrl = null;
   elements.vaultVideo.removeAttribute("src");
   elements.vaultVideo.load();
+  updateVideoPlayButton();
   elements.emptyVideoMessage.textContent = "Saved report loaded. Load the original clip to review the overlay again.";
   elements.emptyVideoState.classList.remove("hidden");
   elements.sessionTitleInput.value = item.title ?? "";
@@ -776,7 +838,6 @@ function renderSessionSnapshot() {
       snapshotCard("Vault score", String(analysis.overallScore ?? 0), scoreTone(analysis.overallScore ?? 0), "trending-up"),
       snapshotCard("Top focus", primaryIssue?.title ?? "Frame review", priorityTone(primaryIssue?.priority), "target"),
       snapshotCard("Confidence", `${confidence}%`, confidence >= 72 ? "good" : confidence >= 48 ? "okay" : "bad", "radar"),
-      snapshotCard("Mode", state.viewMode === "athlete" ? "Athlete" : "Coach", "neutral", state.viewMode === "athlete" ? "sparkles" : "clipboard-check"),
     ].join("");
     window.lucide?.createIcons();
     return;
@@ -785,16 +846,14 @@ function renderSessionSnapshot() {
   if (state.sourceName) {
     elements.sessionSnapshot.innerHTML = [
       snapshotCard("Clip", state.sourceName, "neutral", "video"),
-      snapshotCard("Overlay", state.livePreview ? "Tracking" : "Ready", state.livePreview ? "good" : "neutral", "activity"),
+      snapshotCard("Tracking", state.livePreview ? "People visible" : "Ready", state.livePreview ? "good" : "neutral", "activity"),
       snapshotCard("Score", "--", "neutral", "gauge"),
-      snapshotCard("Mode", state.viewMode === "athlete" ? "Athlete" : "Coach", "neutral", state.viewMode === "athlete" ? "sparkles" : "clipboard-check"),
     ].join("");
   } else {
     elements.sessionSnapshot.innerHTML = [
       snapshotCard("Status", "Ready", "good", "zap"),
       snapshotCard("Video", "No clip", "neutral", "video"),
-      snapshotCard("Overlay", "Standby", "neutral", "activity"),
-      snapshotCard("Mode", state.viewMode === "athlete" ? "Athlete" : "Coach", "neutral", state.viewMode === "athlete" ? "sparkles" : "clipboard-check"),
+      snapshotCard("Tracking", "All people", "neutral", "activity"),
     ].join("");
   }
   window.lucide?.createIcons();
@@ -839,16 +898,13 @@ function renderActionPlan(analysis) {
   const primary = primaryCoachingIssue(analysis);
   const nextIssues = analysis.issues.filter((issue) => issue.id !== primary?.id && issue.status !== "positive").slice(0, 2);
   const strengths = strengthLabels(analysis.bodyScores);
-  const modeCopy =
-    state.viewMode === "athlete"
-      ? "Keep this simple: one cue, one drill, one thing to feel on the next jump."
-      : "Use this as the first review pass, then confirm details frame by frame before changing the plan.";
+  const planCopy = "Use this as the first review pass, then confirm details frame by frame before changing the plan.";
 
   return `
     <div class="plan-heading">
       <div>
         <p class="eyebrow">Next session</p>
-        <h3>${state.viewMode === "athlete" ? "Your jump plan" : "Coach action plan"}</h3>
+        <h3>Action plan</h3>
       </div>
       <span class="status-pill ${
         primary?.priority === "high" ? "status-bad" : primary?.priority === "medium" ? "status-warn" : "status-good"
@@ -856,7 +912,7 @@ function renderActionPlan(analysis) {
         ${escapeHtml(primary?.phase ?? "Overall")}
       </span>
     </div>
-    <p class="plan-copy">${escapeHtml(modeCopy)}</p>
+    <p class="plan-copy">${escapeHtml(planCopy)}</p>
     <div class="plan-grid">
       <article>
         <i data-lucide="target"></i>
@@ -957,21 +1013,6 @@ function formatRatio(value) {
   return String(Math.round(value));
 }
 
-function setReviewMode(mode) {
-  state.viewMode = mode === "athlete" ? "athlete" : "coach";
-  elements.appShell.dataset.mode = state.viewMode;
-  [elements.coachModeButton, elements.athleteModeButton].forEach((button) => {
-    const isActive = button.dataset.mode === state.viewMode;
-    button.classList.toggle("is-active", isActive);
-    button.setAttribute("aria-pressed", String(isActive));
-  });
-  renderSessionSnapshot();
-  if (state.analysis) {
-    elements.actionPlan.innerHTML = renderActionPlan(state.analysis);
-    window.lucide?.createIcons();
-  }
-}
-
 function drawCurrentOverlay() {
   drawOverlay({
     canvas: elements.overlayCanvas,
@@ -998,6 +1039,12 @@ function updateLiveForm() {
   renderSessionSnapshot();
 }
 
+function updateVideoPlayButton() {
+  const hasVideo = Boolean(state.sourceName && elements.vaultVideo.readyState >= 1);
+  const shouldShow = hasVideo && (elements.vaultVideo.paused || elements.vaultVideo.ended);
+  elements.videoPlayButton.classList.toggle("hidden", !shouldShow);
+}
+
 function loadVideoSource({ url, name, kind, file = null, objectUrl = false }) {
   state.file = file;
   state.sourceName = name || "vault-video";
@@ -1013,6 +1060,8 @@ function loadVideoSource({ url, name, kind, file = null, objectUrl = false }) {
     elements.vaultVideo.removeAttribute("crossorigin");
   }
   elements.vaultVideo.src = url;
+  elements.vaultVideo.load();
+  updateVideoPlayButton();
   elements.emptyVideoMessage.textContent = "Load a pole vault clip to begin review.";
   elements.emptyVideoState.classList.add("hidden");
   elements.sessionTitleInput.value ||= state.sourceName.replace(/\.[^.]+$/, "");
@@ -1101,6 +1150,11 @@ function setProgressMessage(message, isError = false) {
 function setSetupMessage(message, isError = false) {
   elements.setupMessage.textContent = message;
   elements.setupMessage.style.color = isError ? "var(--red)" : "var(--muted)";
+}
+
+function setEntryMessage(message, isError = false) {
+  elements.entryMessage.textContent = message;
+  elements.entryMessage.style.color = isError ? "var(--red)" : "var(--muted)";
 }
 
 function setCloudStatus(message, tone) {

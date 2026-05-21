@@ -49,6 +49,61 @@ button:disabled {
   opacity: 0.62;
 }
 
+.entry-gate {
+  align-items: center;
+  background:
+    linear-gradient(135deg, rgba(17, 25, 23, 0.96) 0%, rgba(11, 127, 143, 0.9) 56%, rgba(242, 245, 241, 0.96) 100%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 18px;
+  position: fixed;
+  z-index: 20;
+}
+
+.entry-card {
+  background: #ffffff;
+  border: 1px solid rgba(215, 223, 218, 0.9);
+  border-radius: 8px;
+  box-shadow: 0 28px 60px rgba(10, 16, 15, 0.28);
+  max-width: 460px;
+  padding: 20px;
+  width: min(100%, 460px);
+}
+
+.entry-card h1 {
+  font-size: 1.65rem;
+  line-height: 1.12;
+  margin: 0;
+}
+
+.entry-card > p:not(.eyebrow) {
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 8px 0 0;
+}
+
+.entry-fields {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.entry-actions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.entry-actions .ghost-button {
+  background: #eef7f6;
+  border-color: var(--line);
+  color: var(--accent-dark);
+  grid-column: 1 / -1;
+}
+
 .app-shell {
   min-height: 100vh;
   padding: 18px;
@@ -121,48 +176,24 @@ button:disabled {
   justify-content: flex-end;
 }
 
-.mode-toggle {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
-  display: inline-grid;
-  gap: 4px;
-  grid-template-columns: 1fr 1fr;
-  padding: 4px;
+.topbar .ghost-button {
+  border-color: rgba(255, 255, 255, 0.16);
+  color: rgba(244, 251, 248, 0.82);
 }
 
-.mode-button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  color: rgba(244, 251, 248, 0.75);
-  display: inline-flex;
-  font-weight: 800;
-  gap: 6px;
-  justify-content: center;
-  min-height: 34px;
-  padding: 7px 10px;
-}
-
-.mode-button.is-active {
-  background: #f4fbf8;
-  color: #15201e;
-}
-
-.mode-button svg {
-  height: 16px;
-  width: 16px;
+.topbar .ghost-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
 }
 
 .workspace {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(270px, 330px) minmax(480px, 1fr) minmax(290px, 370px);
+  grid-template-columns: minmax(520px, 1fr) minmax(320px, 430px);
   grid-template-areas:
-    "setup review controls"
-    "library review controls"
-    "library results metrics";
+    "review results"
+    "review metrics"
+    "library library";
   margin: 0 auto;
   max-width: 1540px;
 }
@@ -182,6 +213,7 @@ button:disabled {
 
 .setup-panel {
   grid-area: setup;
+  display: none;
 }
 
 .review-panel {
@@ -190,6 +222,7 @@ button:disabled {
 
 .controls-panel {
   grid-area: controls;
+  display: none;
 }
 
 .results-panel {
@@ -365,7 +398,7 @@ button svg,
 .session-snapshot {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 14px;
 }
 
@@ -454,8 +487,41 @@ button svg,
 }
 
 #overlayCanvas {
-  pointer-events: auto;
+  pointer-events: none;
   z-index: 2;
+}
+
+#overlayCanvas.is-calibrating {
+  cursor: crosshair;
+  pointer-events: auto;
+}
+
+.video-play-button {
+  align-items: center;
+  background: rgba(244, 251, 248, 0.94);
+  border: 1px solid rgba(244, 251, 248, 0.9);
+  border-radius: 999px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+  color: #0c1a18;
+  display: inline-flex;
+  height: 68px;
+  inset: 50% auto auto 50%;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 68px;
+  z-index: 4;
+}
+
+.video-play-button:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.video-play-button svg {
+  height: 30px;
+  margin-left: 3px;
+  width: 30px;
 }
 
 .empty-video-state {
@@ -474,10 +540,10 @@ button svg,
   z-index: 3;
 }
 
-.empty-video-state canvas {
-  height: auto;
-  max-width: min(560px, 92%);
-  width: 100%;
+.empty-video-state svg {
+  color: #7ddbd2;
+  height: 42px;
+  width: 42px;
 }
 
 .empty-video-state p,
@@ -1281,9 +1347,8 @@ button svg,
 
 @media (max-width: 1180px) {
   .workspace {
-    grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.4fr);
+    grid-template-columns: minmax(420px, 1.25fr) minmax(300px, 0.85fr);
     grid-template-areas:
-      "setup controls"
       "review review"
       "results metrics"
       "library library";
@@ -1323,10 +1388,6 @@ button svg,
     align-items: stretch;
   }
 
-  .mode-toggle {
-    width: 100%;
-  }
-
   .workspace {
     display: flex;
     flex-direction: column;
@@ -1360,5 +1421,9 @@ button svg,
   .ghost-button,
   .file-button {
     width: 100%;
+  }
+
+  .entry-actions {
+    grid-template-columns: 1fr;
   }
 }
