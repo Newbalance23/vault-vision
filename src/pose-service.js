@@ -1,4 +1,6 @@
-import { analyzeVault, annotateFrameScores, assignActivePoseTrack } from "./analysis.js?v=2026-05-21-tracking";
+import { analyzeVault, annotateFrameScores, assignActivePoseTrack } from "./analysis.js?v=2026-05-21-ai-tracking";
+import { REQUIRED_GROUPS } from "./landmarks.js?v=2026-05-21-ai-tracking";
+import { averageConfidence, boundingBox, clamp } from "./math.js?v=2026-05-21-ai-tracking";
 
 const TASKS_VERSION = "latest";
 const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;
@@ -16,6 +18,28 @@ const liveTracking = {
   key: "",
   frames: [],
 };
+let detectionCanvas;
+let detectionContext;
+let lastDetectionTimestamp = 0;
+
+const ANALYSIS_TILES = Object.freeze([
+  { id: "full", x: 0, y: 0, w: 1, h: 1, scale: 1 },
+  { id: "runway-wide", x: 0.02, y: 0.24, w: 0.96, h: 0.54, scale: 0.78 },
+  { id: "left-runway", x: 0, y: 0.22, w: 0.5, h: 0.6, scale: 0.92 },
+  { id: "mid-runway", x: 0.25, y: 0.18, w: 0.5, h: 0.62, scale: 0.95 },
+  { id: "right-runway", x: 0.5, y: 0.14, w: 0.5, h: 0.72, scale: 0.95 },
+  { id: "upper-right", x: 0.35, y: 0, w: 0.65, h: 0.62, scale: 0.82 },
+]);
+const LIVE_TILES = Object.freeze([
+  ANALYSIS_TILES[0],
+  ANALYSIS_TILES[1],
+  ANALYSIS_TILES[2],
+  ANALYSIS_TILES[3],
+  ANALYSIS_TILES[4],
+]);
+const TILE_MIN_AREA = 0.00055;
+const TILE_DUPLICATE_IOU = 0.32;
+const TILE_DUPLICATE_CENTER_DISTANCE = 0.055;
 
 export async function createPoseLandmarker({ modelVariant = "full", numPoses = 8 } = {}) {
   const cacheKey = `${modelVariant}:${numPoses}`;
@@ -62,28 +86,10 @@ export async function analyzeVideoWithPose(video, options = {}) {
   const landmarker = await createPoseLandmarker({ modelVariant, numPoses });
   const frameStep = 1 / Number(sampleRate || 12);
   const totalFrames = Math.max(1, Math.floor(duration / frameStep) + 1);
-  const frames = [];
-
-  for (let index = 0; index < totalFrames; index += 1) {
-    const time = Math.min(duration, index * frameStep);
-    await seekVideo(video, time);
-    const result = landmarker.detectForVideo(video, Math.round(time * 1000));
-    frames.push({
-      time,
-      poses: (result.landmarks ?? []).map((landmarks, poseIndex) => ({
-        landmarks: landmarks.map(copyLandmark),
-        worldLandmarks: (result.worldLandmarks?.[poseIndex] ?? []).map(copyLandmark),
-      })),
-    });
-
-    if (index % 2 === 0 || index === totalFrames - 1) {
-      onProgress({
-        phase: "frames",
-        progress: 0.08 + (index / totalFrames) * 0.82,
-        message: `Reading pose frames ${index + 1} / ${totalFrames}`,
-      });
-    }
-  }
+  const canSeek = await canSeekAccurately(video, duration);
+  const frames = canSeek
+    ? await sampleVideoBySeeking({ video, landmarker, frameStep, totalFrames, duration, onProgress })
+    : await sampleVideoByPlayback({ video, landmarker, frameStep, totalFrames, duration, onProgress });
 
   onProgress({ phase: "rules", progress: 0.94, message: "Scoring vault mechanics..." });
   const analysis = analyzeVault({
@@ -112,14 +118,16 @@ export async function detectVideoFrame(video, options = {}) {
   } = options;
   await ensureVideoReady(video);
   const landmarker = await createPoseLandmarker({ modelVariant, numPoses });
-  const result = landmarker.detectForVideo(video, Math.round(video.currentTime * 1000));
+  const poses = detectFramePoses({
+    landmarker,
+    video,
+    timestampBase: allocateTimestampBlock(video.currentTime * 1000, LIVE_TILES.length),
+    tiles: LIVE_TILES,
+  });
   const frame = {
     time: video.currentTime,
     activePoseIndex: -1,
-    poses: (result.landmarks ?? []).map((landmarks, poseIndex) => ({
-      landmarks: landmarks.map(copyLandmark),
-      worldLandmarks: (result.worldLandmarks?.[poseIndex] ?? []).map(copyLandmark),
-    })),
+    poses,
   };
   const trackedFrame = updateLiveTracking(video, frame);
   const phaseRanges = roughPhaseRanges(duration);
@@ -135,6 +143,195 @@ export async function detectVideoFrame(video, options = {}) {
     phaseRanges,
     poseFrames: [{ ...trackedFrame, form }],
   };
+}
+
+async function sampleVideoBySeeking({ video, landmarker, frameStep, totalFrames, duration, onProgress }) {
+  const frames = [];
+  for (let index = 0; index < totalFrames; index += 1) {
+    const time = Math.min(duration, index * frameStep);
+    await seekVideo(video, time, { tolerance: Math.max(0.12, frameStep * 1.5) });
+    frames.push({
+      time,
+      poses: detectFramePoses({
+        landmarker,
+        video,
+        timestampBase: allocateTimestampBlock(time * 1000, ANALYSIS_TILES.length),
+        tiles: ANALYSIS_TILES,
+      }),
+    });
+    reportFrameProgress(onProgress, index, totalFrames, "Reading pose frames");
+  }
+  return frames;
+}
+
+async function sampleVideoByPlayback({ video, landmarker, frameStep, totalFrames, duration, onProgress }) {
+  const frames = [];
+  const previousMuted = video.muted;
+  const previousPlaybackRate = video.playbackRate;
+  video.muted = true;
+  video.playbackRate = 1;
+
+  try {
+    await seekVideo(video, 0, { tolerance: 0.6, allowInaccurate: true });
+    await video.play();
+    let nextIndex = 0;
+    let staleTicks = 0;
+    let lastPlaybackTime = video.currentTime;
+    while (nextIndex < totalFrames && video.currentTime < duration + frameStep) {
+      if (video.ended) break;
+      await waitForVideoTick(video);
+      if (video.currentTime <= lastPlaybackTime + 0.001) {
+        staleTicks += 1;
+      } else {
+        staleTicks = 0;
+        lastPlaybackTime = video.currentTime;
+      }
+      if (staleTicks > 10) break;
+      if (video.currentTime + frameStep * 0.25 < nextIndex * frameStep) continue;
+      video.pause();
+      const actualTime = Math.min(duration, video.currentTime);
+      frames.push({
+        time: actualTime,
+        poses: detectFramePoses({
+          landmarker,
+          video,
+          timestampBase: allocateTimestampBlock(actualTime * 1000, ANALYSIS_TILES.length),
+          tiles: ANALYSIS_TILES,
+        }),
+      });
+      reportFrameProgress(onProgress, nextIndex, totalFrames, "Playing video for pose frames");
+      nextIndex = Math.max(nextIndex + 1, Math.floor(actualTime / frameStep) + 1);
+      if (actualTime < duration - 0.02) await video.play();
+    }
+  } finally {
+    video.pause();
+    video.muted = previousMuted;
+    video.playbackRate = previousPlaybackRate;
+  }
+
+  return frames.length ? frames : sampleVideoBySeeking({ video, landmarker, frameStep, totalFrames, duration, onProgress });
+}
+
+function detectFramePoses({ landmarker, video, timestampBase, tiles = ANALYSIS_TILES }) {
+  const detections = [];
+  tiles.forEach((tile, tileIndex) => {
+    const result = detectTile({ landmarker, video, tile, timestamp: timestampBase + tileIndex });
+    if (!result) return;
+    (result.landmarks ?? []).forEach((landmarks, poseIndex) => {
+      const mappedLandmarks = mapTileLandmarks(landmarks, tile);
+      const box = boundingBox(mappedLandmarks);
+      const confidence = averageConfidence(mappedLandmarks, REQUIRED_GROUPS.core);
+      if (!box || box.area < TILE_MIN_AREA || confidence < 0.18) return;
+      detections.push({
+        box,
+        confidence,
+        score: detectionScore({ box, confidence, tile }),
+        pose: {
+          landmarks: mappedLandmarks.map(copyLandmark),
+          worldLandmarks: tile.id === "full" ? (result.worldLandmarks?.[poseIndex] ?? []).map(copyLandmark) : [],
+          sourceTile: tile.id,
+        },
+      });
+    });
+  });
+  return dedupePoses(detections).map((detection) => detection.pose);
+}
+
+function detectTile({ landmarker, video, tile, timestamp }) {
+  if (tile.id === "full") return landmarker.detectForVideo(video, timestamp);
+  const context = getDetectionContext();
+  if (!context) return null;
+
+  const targetWidth = Math.max(360, Math.round(820 * (tile.scale ?? 1) * tile.w));
+  const targetHeight = Math.max(300, Math.round(targetWidth * (tile.h / tile.w)));
+  detectionCanvas.width = targetWidth;
+  detectionCanvas.height = targetHeight;
+
+  try {
+    context.drawImage(
+      video,
+      tile.x * video.videoWidth,
+      tile.y * video.videoHeight,
+      tile.w * video.videoWidth,
+      tile.h * video.videoHeight,
+      0,
+      0,
+      targetWidth,
+      targetHeight,
+    );
+    return landmarker.detectForVideo(detectionCanvas, timestamp);
+  } catch {
+    return null;
+  }
+}
+
+function getDetectionContext() {
+  if (!detectionCanvas) {
+    detectionCanvas = document.createElement("canvas");
+    detectionContext = detectionCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  return detectionContext;
+}
+
+function mapTileLandmarks(landmarks, tile) {
+  if (tile.id === "full") return landmarks.map(copyLandmark);
+  return landmarks.map((point) => ({
+    x: tile.x + point.x * tile.w,
+    y: tile.y + point.y * tile.h,
+    z: point.z ?? 0,
+    visibility: point.visibility ?? point.presence ?? 1,
+  }));
+}
+
+function detectionScore({ box, confidence, tile }) {
+  const sizeScore = clamp(box.area * 18, 0, 0.55);
+  const runwayBias = tile.id.includes("runway") ? 0.08 : 0;
+  const cropBias = tile.id === "full" ? 0 : 0.04;
+  return confidence * 0.6 + sizeScore + runwayBias + cropBias;
+}
+
+function dedupePoses(detections) {
+  const selected = [];
+  detections
+    .sort((a, b) => b.score - a.score)
+    .forEach((candidate) => {
+      const duplicate = selected.some((existing) => posesOverlap(existing.box, candidate.box));
+      if (!duplicate) selected.push(candidate);
+    });
+  return selected.slice(0, 8);
+}
+
+function posesOverlap(a, b) {
+  if (!a || !b) return false;
+  const iou = boxIou(a, b);
+  const centerDistance = Math.hypot((a.minX + a.maxX - b.minX - b.maxX) / 2, (a.minY + a.maxY - b.minY - b.maxY) / 2);
+  const areaDelta = Math.abs(Math.log((a.area + 0.00001) / (b.area + 0.00001)));
+  return iou > TILE_DUPLICATE_IOU || (centerDistance < TILE_DUPLICATE_CENTER_DISTANCE && areaDelta < 1.3);
+}
+
+function boxIou(a, b) {
+  const left = Math.max(a.minX, b.minX);
+  const right = Math.min(a.maxX, b.maxX);
+  const top = Math.max(a.minY, b.minY);
+  const bottom = Math.min(a.maxY, b.maxY);
+  const intersection = Math.max(0, right - left) * Math.max(0, bottom - top);
+  const union = (a.area ?? 0) + (b.area ?? 0) - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+function reportFrameProgress(onProgress, index, totalFrames, label) {
+  if (index % 2 !== 0 && index !== totalFrames - 1) return;
+  onProgress({
+    phase: "frames",
+    progress: 0.08 + (index / totalFrames) * 0.82,
+    message: `${label} ${index + 1} / ${totalFrames}`,
+  });
+}
+
+function allocateTimestampBlock(preferredMs, size) {
+  const base = Math.max(Math.round(preferredMs), lastDetectionTimestamp + 1);
+  lastDetectionTimestamp = base + Math.max(1, size);
+  return base;
 }
 
 function copyLandmark(point) {
@@ -230,8 +427,36 @@ function ensureVideoReady(video) {
   });
 }
 
-function seekVideo(video, time) {
-  if (Math.abs(video.currentTime - time) < 0.005 && video.readyState >= 2) return Promise.resolve();
+async function canSeekAccurately(video, duration) {
+  if (duration < 1.2 || video.currentSrc?.startsWith("blob:")) return true;
+  const originalTime = video.currentTime || 0;
+  const testTime = Math.min(duration - 0.35, Math.max(0.55, duration * 0.38));
+  try {
+    const actual = await seekVideo(video, testTime, { tolerance: 0.25 });
+    await seekVideo(video, originalTime, { tolerance: 0.5, allowInaccurate: true });
+    return Math.abs(actual - testTime) <= 0.25;
+  } catch {
+    await seekVideo(video, originalTime, { tolerance: 0.5, allowInaccurate: true }).catch(() => {});
+    return false;
+  }
+}
+
+function waitForVideoTick(video) {
+  if ("requestVideoFrameCallback" in video) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 700);
+      video.requestVideoFrameCallback(() => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+  }
+  return new Promise((resolve) => setTimeout(resolve, 160));
+}
+
+function seekVideo(video, time, { tolerance = 0.08, allowInaccurate = false } = {}) {
+  const target = Math.min(Math.max(time, 0), video.duration || time);
+  if (Math.abs(video.currentTime - target) < 0.005 && video.readyState >= 2) return Promise.resolve(video.currentTime);
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       video.removeEventListener("seeked", handleSeeked);
@@ -239,7 +464,11 @@ function seekVideo(video, time) {
     };
     const handleSeeked = () => {
       cleanup();
-      resolve();
+      if (!allowInaccurate && Math.abs(video.currentTime - target) > tolerance) {
+        reject(new Error("The selected video source could not seek accurately."));
+        return;
+      }
+      resolve(video.currentTime);
     };
     const handleError = () => {
       cleanup();
@@ -247,6 +476,6 @@ function seekVideo(video, time) {
     };
     video.addEventListener("seeked", handleSeeked, { once: true });
     video.addEventListener("error", handleError, { once: true });
-    video.currentTime = Math.min(Math.max(time, 0), video.duration || time);
+    video.currentTime = target;
   });
 }
