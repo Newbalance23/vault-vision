@@ -30,7 +30,9 @@ const CAMERA_RELIABILITY = Object.freeze({
 });
 
 const TRACK_MAX_GAP = 12;
-const TRACK_MIN_CORE_CONFIDENCE = 0.2;
+const TRACK_MIN_CORE_CONFIDENCE = 0.16;
+const TRACK_MIN_SEED_CONFIDENCE = 0.24;
+const TRACK_MIN_SEED_SCORE = 0.3;
 const TRACK_MIN_FILL_CONFIDENCE = 0.18;
 const TRACK_POSE_MATCH_LANDMARKS = Object.freeze([
   LM.leftShoulder,
@@ -253,6 +255,7 @@ export function assignActivePoseTrack(poseFrames = []) {
 
     observations.forEach((observation) => {
       if (claimedObservations.has(observation)) return;
+      if (!canSeedTrack(observation)) return;
       const track = { id: tracks.length, observations: [], velocity: { x: 0, y: 0 } };
       pushTrackObservation(track, observation);
       tracks.push(track);
@@ -288,6 +291,7 @@ export function assignActivePoseTrack(poseFrames = []) {
   });
 
   fillTrackGaps(poseFrames, bestTrack, activeStartFrame);
+  smoothTrackedPoses(poseFrames);
   return poseFrames;
 }
 
@@ -727,6 +731,9 @@ function normalizePose(pose) {
   };
   if (Number.isFinite(pose.trackId)) normalized.trackId = pose.trackId;
   if (typeof pose.sourceTile === "string") normalized.sourceTile = pose.sourceTile;
+  if (Number.isFinite(pose.sourceConfidence)) normalized.sourceConfidence = round(pose.sourceConfidence, 3);
+  if (Number.isFinite(pose.detectionScore)) normalized.detectionScore = round(pose.detectionScore, 3);
+  if (Number.isFinite(pose.poseQuality)) normalized.poseQuality = round(pose.poseQuality, 3);
   return normalized;
 }
 
@@ -760,6 +767,8 @@ function poseObservations(frame, frameIndex) {
       const box = boundingBox(landmarks);
       const centerPoint = poseCenter(landmarks);
       const confidence = averageConfidence(landmarks, REQUIRED_GROUPS.core);
+      const sourceScore = Number.isFinite(pose.detectionScore) ? pose.detectionScore : confidence;
+      const visibleRequired = TRACK_POSE_MATCH_LANDMARKS.filter((index) => pointConfidence(landmarks[index]) >= 0.24).length;
       return {
         frameIndex,
         poseIndex,
@@ -767,9 +776,17 @@ function poseObservations(frame, frameIndex) {
         center: centerPoint,
         box,
         confidence,
+        sourceScore,
+        sourceTile: pose.sourceTile ?? "unknown",
+        visibleRequired,
       };
     })
-    .filter((observation) => observation.center && observation.confidence >= TRACK_MIN_CORE_CONFIDENCE);
+    .filter(
+      (observation) =>
+        observation.center &&
+        observation.visibleRequired >= 5 &&
+        (observation.confidence >= TRACK_MIN_CORE_CONFIDENCE || observation.sourceScore >= TRACK_MIN_SEED_SCORE),
+    );
 }
 
 function trackMatch(track, observation, frameIndex) {
@@ -785,6 +802,8 @@ function trackMatch(track, observation, frameIndex) {
   const overlap = boxIou(observation.box, last.box);
   const sizeDelta = boxScaleDelta(observation.box, last.box);
   const poseDelta = trackPoseDelta(track, observation);
+  const sourceScore = Number.isFinite(observation.sourceScore) ? observation.sourceScore : observation.confidence;
+  const tileBonus = sourceTileGroup(observation.sourceTile) === sourceTileGroup(last.sourceTile) ? 0.035 : 0;
 
   if (centerDistance > maxDistance && overlap < 0.04) return null;
   if (sizeDelta > 1.45 && overlap < 0.08 && poseDelta > 0.64) return null;
@@ -796,7 +815,9 @@ function trackMatch(track, observation, frameIndex) {
       poseDelta * 0.5 +
       gap * 0.022 -
       overlap * 0.36 -
-      observation.confidence * 0.06,
+      sourceScore * 0.09 -
+      observation.confidence * 0.04 -
+      tileBonus,
   };
 }
 
@@ -814,6 +835,12 @@ function pushTrackObservation(track, observation) {
     };
   }
   track.observations.push(observation);
+}
+
+function canSeedTrack(observation) {
+  if (observation.visibleRequired < 6) return false;
+  if (observation.confidence >= TRACK_MIN_SEED_CONFIDENCE) return true;
+  return observation.sourceScore >= TRACK_MIN_SEED_SCORE && observation.confidence >= TRACK_MIN_CORE_CONFIDENCE;
 }
 
 function predictTrackCenter(track, frameIndex) {
@@ -862,6 +889,14 @@ function poseScale(box) {
   return Math.max(box.width ?? 0, box.height ?? 0, Math.sqrt(box.area ?? 0), 0.03);
 }
 
+function sourceTileGroup(sourceTile = "") {
+  if (sourceTile.includes("runway")) return "runway";
+  if (sourceTile.includes("right") || sourceTile.includes("upper")) return "right";
+  if (sourceTile.includes("left")) return "left";
+  if (sourceTile.includes("mid")) return "mid";
+  return sourceTile || "unknown";
+}
+
 function activeTrackScore(track, totalFrames) {
   const observations = track.observations;
   if (observations.length < 2) return 0;
@@ -877,6 +912,7 @@ function activeTrackScore(track, totalFrames) {
   const first = observations[0].center;
   const last = observations.at(-1).center;
   const displacement = distance2d(first, last);
+  const signedHorizontalProgress = Math.abs((last?.x ?? 0) - (first?.x ?? 0));
   const yValues = observations.map((observation) => observation.center.y);
   const verticalTravel = Math.max(...yValues) - Math.min(...yValues);
   const verticalLift = Math.max(0, first.y - Math.min(...yValues));
@@ -886,6 +922,9 @@ function activeTrackScore(track, totalFrames) {
     observations.reduce((sum, observation) => sum + (observation.confidence ?? 0), 0) / Math.max(1, observations.length);
   const meanArea =
     observations.reduce((sum, observation) => sum + (observation.box?.area ?? 0), 0) / Math.max(1, observations.length);
+  const meanSourceScore =
+    observations.reduce((sum, observation) => sum + (observation.sourceScore ?? observation.confidence ?? 0), 0) /
+    Math.max(1, observations.length);
   const earlyPresence = 1 - Math.min(1, firstFrame / Math.max(1, totalFrames * 0.45));
   const finishPresence = Math.min(1, lastFrame / Math.max(1, totalFrames * 0.65));
   const stationaryPenalty = path < 0.08 && horizontalTravel < 0.05 ? 0.2 : 1;
@@ -893,24 +932,67 @@ function activeTrackScore(track, totalFrames) {
   const jumpPenalty = maxStep > 0.24 ? 0.18 : maxStep > 0.16 ? 0.45 : maxStep > 0.1 ? 0.72 : 1;
   const pathShapePenalty = path > displacement * 6 + 1.1 && averageStep > 0.045 ? 0.42 : 1;
   const runwayProgressBonus = horizontalTravel > 0.24 && verticalLift > 0.12 ? 0.35 : horizontalTravel > 0.16 ? 0.16 : 0;
+  const directionalConsistency = path > 0.001 ? displacement / path : 0;
+  const progressConsistency = horizontalTravel > 0.001 ? signedHorizontalProgress / horizontalTravel : 0;
+  const forwardProgressBonus =
+    signedHorizontalProgress > 0.24 ? 0.42 : signedHorizontalProgress > 0.16 ? 0.25 : signedHorizontalProgress > 0.1 ? 0.12 : 0;
+  const wanderingPenalty =
+    path > 0.12 && directionalConsistency < 0.18 ? 0.42 : path > 0.1 && progressConsistency < 0.3 ? 0.62 : 1;
+  const persistentBackgroundPenalty =
+    spanCoverage > 0.62 && signedHorizontalProgress < 0.1 && verticalLift < 0.1 && meanArea > 0.01 ? 0.42 : 1;
+  const vaultShapeBonus = trackVaultShapeBonus(observations);
   return (
     (path * 2.2 +
       displacement * 1.6 +
+      signedHorizontalProgress * 1.25 +
       horizontalTravel * 1.35 +
       verticalTravel * 1.3 +
       verticalLift * 1.15 +
       runwayProgressBonus +
+      forwardProgressBonus +
+      progressConsistency * 0.16 +
+      vaultShapeBonus +
       coverage * 0.42 +
       spanCoverage * 0.52 +
       continuity * 0.34 +
       meanConfidence * 0.18 +
+      meanSourceScore * 0.1 +
       earlyPresence * 0.08 +
       finishPresence * 0.12 +
       meanArea * 0.03) *
     stationaryPenalty *
     jumpPenalty *
-    pathShapePenalty
+    pathShapePenalty *
+    wanderingPenalty *
+    persistentBackgroundPenalty
   );
+}
+
+function trackVaultShapeBonus(observations = []) {
+  if (!observations.length) return 0;
+  let highHand = 0;
+  let invertedFrames = 0;
+  let kneeDriveFrames = 0;
+  observations.forEach((observation) => {
+    const landmarks = observation.landmarks ?? [];
+    const leftWrist = landmarks[LM.leftWrist];
+    const rightWrist = landmarks[LM.rightWrist];
+    const wristY = Math.min(
+      pointConfidence(leftWrist) >= 0.22 ? leftWrist.y : 1,
+      pointConfidence(rightWrist) >= 0.22 ? rightWrist.y : 1,
+    );
+    if (Number.isFinite(wristY)) highHand = Math.max(highHand, 1 - wristY);
+
+    const hip = center(landmarks, LM.leftHip, LM.rightHip);
+    const ankle = center(landmarks, LM.leftAnkle, LM.rightAnkle);
+    if (hip && ankle && ankle.y < hip.y) invertedFrames += 1;
+
+    const knee = center(landmarks, LM.leftKnee, LM.rightKnee);
+    if (hip && knee && knee.y < hip.y - 0.08) kneeDriveFrames += 1;
+  });
+  const inversion = clamp(invertedFrames / Math.max(1, observations.length * 0.22), 0, 1);
+  const kneeDrive = clamp(kneeDriveFrames / Math.max(1, observations.length * 0.24), 0, 1);
+  return clamp(highHand * 0.22 + inversion * 0.22 + kneeDrive * 0.1, 0, 0.46);
 }
 
 function vaultFocusStartFrame(track, totalFrames) {
@@ -953,6 +1035,53 @@ function fillTrackGaps(poseFrames, track, minFrameIndex = 0) {
       frame.poses[fill.poseIndex].trackId = track.id;
     }
   });
+}
+
+function smoothTrackedPoses(poseFrames) {
+  const trackMap = new Map();
+  poseFrames.forEach((frame, frameIndex) => {
+    frame.poses?.forEach((pose, poseIndex) => {
+      if (!Number.isFinite(pose.trackId)) return;
+      const items = trackMap.get(pose.trackId) ?? [];
+      items.push({ frameIndex, poseIndex, pose });
+      trackMap.set(pose.trackId, items);
+    });
+  });
+
+  trackMap.forEach((items) => {
+    let previousLandmarks = null;
+    let previousFrameIndex = -Infinity;
+    items
+      .sort((a, b) => a.frameIndex - b.frameIndex)
+      .forEach((item) => {
+        const landmarks = item.pose.landmarks ?? [];
+        if (!previousLandmarks || item.frameIndex - previousFrameIndex > 4) {
+          previousLandmarks = landmarks.map((point) => ({ ...point }));
+          previousFrameIndex = item.frameIndex;
+          return;
+        }
+
+        const smoothed = landmarks.map((point, index) => smoothLandmark(previousLandmarks[index], point));
+        item.pose.landmarks = smoothed;
+        previousLandmarks = smoothed.map((point) => ({ ...point }));
+        previousFrameIndex = item.frameIndex;
+      });
+  });
+}
+
+function smoothLandmark(previous, current) {
+  if (!previous || !current) return current;
+  const confidence = pointConfidence(current);
+  if (confidence < 0.16) return current;
+  const motion = Math.hypot((current.x ?? 0) - (previous.x ?? 0), (current.y ?? 0) - (previous.y ?? 0));
+  const currentWeight = motion > 0.055 ? 0.86 : confidence < 0.42 ? 0.52 : 0.66;
+  return {
+    ...current,
+    x: lerp(previous.x, current.x, currentWeight),
+    y: lerp(previous.y, current.y, currentWeight),
+    z: lerp(previous.z ?? 0, current.z ?? 0, currentWeight),
+    visibility: confidence,
+  };
 }
 
 function expectedTrackAtFrame(observations, frameIndex) {
