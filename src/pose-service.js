@@ -1,6 +1,6 @@
-import { analyzeVault, annotateFrameScores, assignActivePoseTrack } from "./analysis.js?v=2026-05-21-follow-tracking";
-import { REQUIRED_GROUPS } from "./landmarks.js?v=2026-05-21-follow-tracking";
-import { averageConfidence, boundingBox, clamp } from "./math.js?v=2026-05-21-follow-tracking";
+import { analyzeVault, annotateFrameScores, assignActivePoseTrack } from "./analysis.js?v=2026-05-22-esp-tracking";
+import { REQUIRED_GROUPS } from "./landmarks.js?v=2026-05-22-esp-tracking";
+import { averageConfidence, boundingBox, clamp, pointConfidence } from "./math.js?v=2026-05-22-esp-tracking";
 
 const TASKS_VERSION = "latest";
 const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;
@@ -40,6 +40,9 @@ const LIVE_TILES = Object.freeze([
 const TILE_MIN_AREA = 0.00055;
 const TILE_DUPLICATE_IOU = 0.32;
 const TILE_DUPLICATE_CENTER_DISTANCE = 0.055;
+const DETECTION_LANDMARKS = Object.freeze([
+  ...new Set([...REQUIRED_GROUPS.core, ...REQUIRED_GROUPS.arms, ...REQUIRED_GROUPS.legs, ...REQUIRED_GROUPS.feet]),
+]);
 
 export async function createPoseLandmarker({ modelVariant = "full", numPoses = 8 } = {}) {
   const cacheKey = `${modelVariant}:${numPoses}`;
@@ -221,15 +224,21 @@ function detectFramePoses({ landmarker, video, timestampBase, tiles = ANALYSIS_T
       const mappedLandmarks = mapTileLandmarks(landmarks, tile);
       const box = boundingBox(mappedLandmarks);
       const confidence = averageConfidence(mappedLandmarks, REQUIRED_GROUPS.core);
-      if (!box || box.area < TILE_MIN_AREA || confidence < 0.18) return;
+      const quality = poseQuality(mappedLandmarks, box, confidence, tile);
+      if (!quality.accept) return;
+      const score = detectionScore({ box, confidence, quality, tile });
       detections.push({
         box,
         confidence,
-        score: detectionScore({ box, confidence, tile }),
+        quality,
+        score,
         pose: {
           landmarks: mappedLandmarks.map(copyLandmark),
           worldLandmarks: tile.id === "full" ? (result.worldLandmarks?.[poseIndex] ?? []).map(copyLandmark) : [],
           sourceTile: tile.id,
+          sourceConfidence: confidence,
+          detectionScore: score,
+          poseQuality: quality.score,
         },
       });
     });
@@ -283,11 +292,38 @@ function mapTileLandmarks(landmarks, tile) {
   }));
 }
 
-function detectionScore({ box, confidence, tile }) {
-  const sizeScore = clamp(box.area * 18, 0, 0.55);
+function poseQuality(landmarks, box, confidence, tile) {
+  if (!box) return { accept: false, score: 0 };
+  const visibleRequired = DETECTION_LANDMARKS.filter((index) => pointConfidence(landmarks[index]) >= 0.26).length;
+  const insideVisible = landmarks.filter((point) => {
+    if (pointConfidence(point) < 0.2) return false;
+    return point.x >= -0.08 && point.x <= 1.08 && point.y >= -0.08 && point.y <= 1.08;
+  }).length;
+  const visibleTotal = landmarks.filter((point) => pointConfidence(point) >= 0.2).length;
+  const insideRatio = visibleTotal ? insideVisible / visibleTotal : 0;
+  const limbConfidence = averageConfidence(landmarks, [...REQUIRED_GROUPS.arms, ...REQUIRED_GROUPS.legs]);
+  const coreScore = clamp((confidence - 0.12) / 0.58, 0, 1);
+  const limbScore = clamp((limbConfidence - 0.08) / 0.58, 0, 1);
+  const landmarkScore = clamp(visibleRequired / DETECTION_LANDMARKS.length, 0, 1);
+  const sizeScore = clamp(Math.sqrt(box.area) * 9, 0, 1);
+  const frameScore = clamp((insideRatio - 0.5) / 0.5, 0, 1);
+  const cropBoost = tile.id === "full" ? 0 : 0.04;
+  const score = clamp(coreScore * 0.35 + limbScore * 0.2 + landmarkScore * 0.26 + sizeScore * 0.12 + frameScore * 0.07 + cropBoost, 0, 1);
+  const tinyButConfident = box.area >= TILE_MIN_AREA * 0.62 && confidence >= 0.32 && visibleRequired >= 7;
+  const accept =
+    confidence >= 0.16 &&
+    insideRatio >= 0.55 &&
+    visibleRequired >= 5 &&
+    (box.area >= TILE_MIN_AREA || tinyButConfident) &&
+    score >= 0.28;
+  return { accept, score, visibleRequired, insideRatio };
+}
+
+function detectionScore({ box, confidence, quality, tile }) {
+  const sizeScore = clamp(box.area * 18, 0, 0.48);
   const runwayBias = tile.id.includes("runway") ? 0.08 : 0;
   const cropBias = tile.id === "full" ? 0 : 0.04;
-  return confidence * 0.6 + sizeScore + runwayBias + cropBias;
+  return confidence * 0.42 + (quality?.score ?? 0) * 0.38 + sizeScore + runwayBias + cropBias;
 }
 
 function dedupePoses(detections) {
@@ -295,10 +331,15 @@ function dedupePoses(detections) {
   detections
     .sort((a, b) => b.score - a.score)
     .forEach((candidate) => {
-      const duplicate = selected.some((existing) => posesOverlap(existing.box, candidate.box));
+      const duplicate = selected.some((existing) => posesDuplicate(existing, candidate));
       if (!duplicate) selected.push(candidate);
     });
   return selected.slice(0, 8);
+}
+
+function posesDuplicate(a, b) {
+  if (!a || !b) return false;
+  return posesOverlap(a.box, b.box) || poseKeypointDuplicate(a, b);
 }
 
 function posesOverlap(a, b) {
@@ -307,6 +348,27 @@ function posesOverlap(a, b) {
   const centerDistance = Math.hypot((a.minX + a.maxX - b.minX - b.maxX) / 2, (a.minY + a.maxY - b.minY - b.maxY) / 2);
   const areaDelta = Math.abs(Math.log((a.area + 0.00001) / (b.area + 0.00001)));
   return iou > TILE_DUPLICATE_IOU || (centerDistance < TILE_DUPLICATE_CENTER_DISTANCE && areaDelta < 1.3);
+}
+
+function poseKeypointDuplicate(a, b) {
+  const aPose = a.pose?.landmarks ?? [];
+  const bPose = b.pose?.landmarks ?? [];
+  const scale = Math.max(0.035, (poseScale(a.box) + poseScale(b.box)) / 2);
+  const distances = DETECTION_LANDMARKS.map((index) => {
+    const ap = aPose[index];
+    const bp = bPose[index];
+    const confidence = Math.min(pointConfidence(ap), pointConfidence(bp));
+    if (confidence < 0.24) return null;
+    return Math.hypot(ap.x - bp.x, ap.y - bp.y) / scale;
+  }).filter(Number.isFinite);
+  if (distances.length < 6) return false;
+  const mean = distances.reduce((sum, value) => sum + value, 0) / distances.length;
+  return mean < 0.32;
+}
+
+function poseScale(box) {
+  if (!box) return 0.08;
+  return Math.max(box.width ?? 0, box.height ?? 0, Math.sqrt(box.area ?? 0), 0.035);
 }
 
 function boxIou(a, b) {

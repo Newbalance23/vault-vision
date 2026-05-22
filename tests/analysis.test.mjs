@@ -174,6 +174,71 @@ const highPlantTrackIds = crossingFrames
   .filter(Number.isFinite);
 assert.equal(new Set(highPlantTrackIds).size, 1, "pose-shape matching should keep the high-plant vaulter on one track");
 
+const noisyCrowdFrames = Array.from({ length: 30 }, (_, index) => ({
+  time: index / 10,
+  activePoseIndex: -1,
+  poses: [
+    {
+      landmarks: makePose({
+        x: 0.14 + index * 0.018,
+        hipY: index > 18 ? 0.44 : 0.62,
+        ankleY: index > 18 ? 0.34 : 0.84,
+        scale: 0.62,
+        visibility: 0.88,
+      }),
+      detectionScore: 0.72,
+      sourceTile: "runway-wide",
+    },
+    {
+      landmarks: makePose({ x: 0.82, scale: 1.5, visibility: 0.12 }),
+      detectionScore: 0.14,
+      sourceTile: "full",
+    },
+  ],
+}));
+assignActivePoseTrack(noisyCrowdFrames);
+assert.ok(
+  noisyCrowdFrames.filter((frame) => frame.activePoseIndex === 0).length >= 24,
+  "tracker should ignore low-confidence crowd hallucinations and stay on the vaulter",
+);
+assert.ok(
+  noisyCrowdFrames.every((frame) => !Number.isFinite(frame.poses[1].trackId)),
+  "very low-confidence unmatched detections should not create extra person tracks",
+);
+
+const jitterCrowdFrames = Array.from({ length: 36 }, (_, index) => ({
+  time: index / 10,
+  activePoseIndex: -1,
+  poses: [
+    {
+      landmarks: makePose({
+        x: 0.16 + index * 0.017,
+        hipY: index > 20 ? 0.42 : 0.62,
+        ankleY: index > 20 ? 0.3 : 0.84,
+        scale: 0.65,
+        visibility: 0.88,
+      }),
+      detectionScore: 0.7,
+      sourceTile: "runway-wide",
+    },
+    {
+      landmarks: makePose({
+        x: 0.76 + Math.sin(index * 1.3) * 0.045,
+        hipY: 0.56 + Math.cos(index * 1.1) * 0.025,
+        scale: 1.3,
+        visibility: 0.96,
+      }),
+      detectionScore: 0.82,
+      sourceTile: "full",
+    },
+  ],
+}));
+assignActivePoseTrack(jitterCrowdFrames);
+assert.ok(
+  jitterCrowdFrames.filter((frame) => frame.activePoseIndex === 0).length >= 28,
+  "active track scoring should prefer directed runway progress over foreground jitter",
+);
+
 const frames = makeFrames();
 const activeSeries = frames.map((frame) => ({ time: frame.time, pose: frame.poses[0] }));
 const phases = detectPhases(activeSeries, 8);

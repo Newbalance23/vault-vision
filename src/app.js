@@ -1,9 +1,9 @@
-import { overrideAnalysisActiveTrack } from "./analysis.js?v=2026-05-21-follow-tracking";
-import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-21-follow-tracking";
-import { canvasPointToVideoPoint, drawOverlay } from "./renderer.js?v=2026-05-21-follow-tracking";
-import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-21-follow-tracking";
-import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-21-follow-tracking";
-import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-21-follow-tracking";
+import { overrideAnalysisActiveTrack } from "./analysis.js?v=2026-05-22-esp-tracking";
+import { analyzeVideoWithPose, detectVideoFrame } from "./pose-service.js?v=2026-05-22-esp-tracking";
+import { canvasPointToVideoPoint, drawOverlay } from "./renderer.js?v=2026-05-22-esp-tracking";
+import { createVaultCloud, loadSupabaseConfig, saveSupabaseConfig } from "./supabase-service.js?v=2026-05-22-esp-tracking";
+import { loadLocalSessions, saveLocalSession } from "./local-library.js?v=2026-05-22-esp-tracking";
+import { DEFAULT_SUPABASE_CONFIG } from "./config.js?v=2026-05-22-esp-tracking";
 
 const elements = {
   appShell: document.querySelector(".app-shell"),

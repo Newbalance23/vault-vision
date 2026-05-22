@@ -4,7 +4,9 @@ import { pointConfidence } from "./math.js";
 const COLORS = Object.freeze({
   active: "#31d5c8",
   activeJoint: "#ffffff",
-  posePalette: ["#7ddbd2", "#ffca58", "#a78bfa", "#f97316", "#5eead4", "#60a5fa", "#fb7185"],
+  secondaryPose: "rgba(219, 232, 230, 0.58)",
+  secondaryJoint: "rgba(246, 252, 250, 0.68)",
+  activeHalo: "rgba(3, 8, 10, 0.72)",
   marker: "#ffca58",
   markerLine: "rgba(255, 202, 88, 0.9)",
   text: "rgba(255, 255, 255, 0.92)",
@@ -86,22 +88,40 @@ function drawPose(context, landmarks, videoRect, isActive, form, poseIndex = 0) 
   context.save();
   context.lineCap = "round";
   context.lineJoin = "round";
-  context.lineWidth = isActive ? 4 : 3;
   const secondaryColor = secondaryPoseColor(poseIndex);
 
   SKELETON_CONNECTIONS.forEach(([from, to]) => {
     const a = landmarks[from];
     const b = landmarks[to];
     if (pointConfidence(a) < 0.28 || pointConfidence(b) < 0.28) return;
+    const x1 = mapX(a, videoRect);
+    const y1 = mapY(a, videoRect);
+    const x2 = mapX(b, videoRect);
+    const y2 = mapY(b, videoRect);
+    if (isActive) {
+      context.strokeStyle = COLORS.activeHalo;
+      context.lineWidth = 7;
+      line(context, x1, y1, x2, y2);
+    }
     context.strokeStyle = isActive ? colorForConnection(from, to, form) : secondaryColor;
-    line(context, mapX(a, videoRect), mapY(a, videoRect), mapX(b, videoRect), mapY(b, videoRect));
+    context.lineWidth = isActive ? 4 : 2.25;
+    line(context, x1, y1, x2, y2);
   });
 
   landmarks.forEach((point) => {
     if (pointConfidence(point) < 0.35) return;
-    context.fillStyle = isActive ? colorForJoint(point, form) : secondaryColor;
+    const radius = isActive ? 4.4 : 2.8;
+    const x = mapX(point, videoRect);
+    const y = mapY(point, videoRect);
+    if (isActive) {
+      context.fillStyle = COLORS.activeHalo;
+      context.beginPath();
+      context.arc(x, y, radius + 2.4, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.fillStyle = isActive ? colorForJoint(point, form) : COLORS.secondaryJoint;
     context.beginPath();
-    context.arc(mapX(point, videoRect), mapY(point, videoRect), isActive ? 4 : 3, 0, Math.PI * 2);
+    context.arc(x, y, radius, 0, Math.PI * 2);
     context.fill();
   });
 
@@ -184,8 +204,8 @@ function colorForJoint(point, form) {
   return hexToRgba(hex, alpha);
 }
 
-function secondaryPoseColor(index, alpha = 0.82) {
-  return hexToRgba(COLORS.posePalette[index % COLORS.posePalette.length], alpha);
+function secondaryPoseColor(_index, _alpha = 0.58) {
+  return COLORS.secondaryPose;
 }
 
 function hexToRgba(hex, alpha = 1) {
